@@ -1,0 +1,9 @@
+{
+  "name": "durak-online",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node tests/moves.mjs && node tests/rules-fixes.mjs && node tests/full-game.mjs"
+  }
+}

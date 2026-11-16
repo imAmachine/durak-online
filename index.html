@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Дурак Онлайн</title>
+  <link rel="stylesheet" href="style.css?v=4">
+</head>
+<body>
+  <div class="app-shell" id="appShell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">♠</span><span>Дурак<br><em>онлайн</em></span></div>
+      <button class="profile" id="profileBtn">
+        <span class="avatar" id="profileAvatar">И</span>
+        <span class="profile-info"><strong id="profileName">Игрок</strong><small>Изменить профиль</small></span>
+        <span class="edit-mark">✎</span>
+      </button>
+      <nav class="nav">
+        <button class="nav-item active" data-view="lobby"><span>♠</span> Лобби</button>
+        <button class="nav-item" data-view="mygames"><span>♣</span> Мои игры</button>
+        <button class="nav-item" data-view="rules"><span>♛</span> Правила</button>
+        <button class="nav-item" data-view="settings"><span>⚙</span> Настройки</button>
+      </nav>
+      <div class="side-bottom">
+        <div class="online"><i></i><span id="onlineCount">0</span> онлайн</div>
+        <button class="theme-toggle" id="themeToggle">Тёмная тема</button>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <div id="lobbyView">
+      <header class="topbar">
+        <div><p class="eyebrow">ОНЛАЙН-ИГРА</p><h1>Лобби</h1></div>
+        <div class="top-actions">
+          <button class="ghost-btn" id="historyBtn">История игр</button>
+          <button class="ghost-btn" id="joinRoomBtn">Войти по коду</button>
+          <button class="primary-btn" id="createBtn">+ Создать игру</button>
+        </div>
+      </header>
+
+      <section class="hero-banner">
+        <div class="hero-copy">
+          <div class="tag">ДЛЯ ДРУЗЕЙ</div>
+          <h2>Соберите свою компанию</h2>
+          <p>Создайте лобби, отправьте друзьям код приглашения и играйте в дурака онлайн.</p>
+          <button class="hero-btn" id="heroCreateBtn">Создать лобби <span>→</span></button>
+        </div>
+        <div class="hero-cards" aria-hidden="true">
+          <div class="playing-card red-card c1">♥<small>7</small></div>
+          <div class="playing-card dark-card c2">♠<small>Q</small></div>
+          <div class="playing-card red-card c3">♦<small>A</small></div>
+          <div class="playing-card dark-card c4">♣<small>10</small></div>
+        </div>
+      </section>
+
+      <section class="section-head">
+        <div><h3>Открытые игры</h3><p>Список обновляется в реальном времени</p></div>
+        <div class="filter" id="lobbyFilter">
+          <button class="filter-active" data-filter="all">Все</button>
+          <button data-filter="classic">Подкидной</button>
+          <button data-filter="transfer">Переводной</button>
+        </div>
+      </section>
+      <section class="games-grid" id="gamesGrid"></section>
+
+      <section class="rules-brief">
+        <article class="rule-card"><span class="rule-icon">♠</span><h4>Подкидной</h4><p>Атакующий подкидывает карты того же достоинства, что уже на столе. Защищающийся отбивает или берёт.</p></article>
+        <article class="rule-card"><span class="rule-icon">♣</span><h4>Переводной</h4><p>Пока карты не отбиты, защищающийся переводит ход картой того же достоинства на следующего игрока.</p></article>
+        <article class="rule-card"><span class="rule-icon">♦</span><h4>Козырь</h4><p>Козырь бьёт любую некозырную карту. Старшая карта одной масти бьёт младшую.</p></article>
+      </section>
+      </div>
+
+      <section class="game-screen" id="gameScreen">
+        <header class="game-top">
+          <button class="ghost-btn" id="leaveRoom">← В лобби</button>
+          <div class="table-title">
+            <strong id="tableName">Партия</strong>
+            <small id="tableMode">Подкидной · 36 карт</small>
+            <button class="code-btn" id="roomCode">КОД</button>
+          </div>
+          <button class="ghost-btn" id="gameRules">Правила</button>
+        </header>
+        <div class="table">
+          <div class="seats" id="seats"></div>
+          <div class="deck" id="deckBox">
+            <div class="deck-card" id="trumpCard"><span></span><small>Козырь</small></div>
+            <div class="deck-count"><span id="deckCount">0</span> в колоде</div>
+          </div>
+          <div class="table-cards" id="tableCards"></div>
+          <div class="table-message" id="tableMessage"></div>
+          <div class="my-hand" id="myHand"></div>
+        </div>
+        <div class="game-actions" id="gameActions"></div>
+        <div class="finish-overlay" id="finishOverlay"></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="modalBackdrop">
+    <div class="modal">
+      <button class="close-btn" id="modalClose">×</button>
+      <div id="modalBody"></div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script src="app.js?v=4"></script>
+</body>
+</html>
