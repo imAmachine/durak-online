@@ -1,109 +1,105 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Дурак Онлайн</title>
-  <link rel="stylesheet" href="style.css?v=4">
+  <meta name="theme-color" content="#080d0a">
+  <meta name="description" content="Дурак онлайн для своей компании. Создайте стол, отправьте друзьям код и сыграйте в подкидного или переводного.">
+  <title>Дурак Онлайн · Карточный клуб</title>
+  <link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
+  <a class="skip-link" href="#main">Перейти к содержимому</a>
   <div class="app-shell" id="appShell">
-    <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">♠</span><span>Дурак<br><em>онлайн</em></span></div>
-      <button class="profile" id="profileBtn">
+    <aside class="sidebar" aria-label="Карточный клуб">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">♠</span><span>Дурак<em>КАРТОЧНЫЙ КЛУБ</em></span></div>
+      <button class="profile" id="profileBtn" aria-label="Изменить профиль">
         <span class="avatar" id="profileAvatar">И</span>
-        <span class="profile-info"><strong id="profileName">Игрок</strong><small>Изменить профиль</small></span>
-        <span class="edit-mark">✎</span>
+        <span class="profile-info"><strong id="profileName">Игрок</strong><small>Ваш профиль</small></span>
+        <span class="edit-mark" aria-hidden="true">↗</span>
       </button>
-      <nav class="nav">
-        <button class="nav-item active" data-view="lobby"><span>♠</span> Лобби</button>
-        <button class="nav-item" data-view="mygames"><span>♣</span> Мои игры</button>
-        <button class="nav-item" data-view="rules"><span>♛</span> Правила</button>
-        <button class="nav-item" data-view="settings"><span>⚙</span> Настройки</button>
+      <nav class="nav" aria-label="Основная навигация">
+        <button class="nav-item active" data-view="lobby" aria-label="Лобби" aria-current="page"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Лобби</span></button>
+        <button class="nav-item" data-view="mygames" aria-label="Мои игры"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="8" y="3" width="12" height="17" rx="2"/><path d="M5 6H4a1 1 0 0 0-1 1v13a2 2 0 0 0 2 2h11M12 8h4m-4 4h4"/></svg><span>Мои игры</span></button>
+        <button class="nav-item" data-view="rules" aria-label="Правила"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 5C8 2 3 4 3 4v15s5-2 9 1c4-3 9-1 9-1V4s-5-2-9 1Zm0 0v15"/></svg><span>Правила</span></button>
+        <button class="nav-item" data-view="settings" aria-label="Настройки"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="var(--panel)"/><circle cx="15" cy="17" r="3" fill="var(--panel)"/></svg><span>Настройки</span></button>
       </nav>
       <div class="side-bottom">
-        <div class="online"><i></i><span id="onlineCount">0</span> онлайн</div>
+        <div class="sidebar-note">Хорошая партия начинается<br>с хорошей компании.</div>
+        <div class="online"><i aria-hidden="true"></i><span id="onlineCount">0</span> в клубе</div>
         <button class="theme-toggle" id="themeToggle">Тёмная тема</button>
       </div>
     </aside>
-
-    <main class="main-content">
+    <main class="main-content" id="main" tabindex="-1">
       <div id="lobbyView">
-      <header class="topbar">
-        <div><p class="eyebrow">ОНЛАЙН-ИГРА</p><h1>Лобби</h1></div>
-        <div class="top-actions">
-          <button class="ghost-btn" id="historyBtn">История игр</button>
-          <button class="ghost-btn" id="joinRoomBtn">Войти по коду</button>
-          <button class="primary-btn" id="createBtn">+ Создать игру</button>
-        </div>
-      </header>
-
-      <section class="hero-banner">
-        <div class="hero-copy">
-          <div class="tag">ДЛЯ ДРУЗЕЙ</div>
-          <h2>Соберите свою компанию</h2>
-          <p>Создайте лобби, отправьте друзьям код приглашения и играйте в дурака онлайн.</p>
-          <button class="hero-btn" id="heroCreateBtn">Создать лобби <span>→</span></button>
-        </div>
-        <div class="hero-cards" aria-hidden="true">
-          <div class="playing-card red-card c1">♥<small>7</small></div>
-          <div class="playing-card dark-card c2">♠<small>Q</small></div>
-          <div class="playing-card red-card c3">♦<small>A</small></div>
-          <div class="playing-card dark-card c4">♣<small>10</small></div>
-        </div>
-      </section>
-
-      <section class="section-head">
-        <div><h3>Открытые игры</h3><p>Список обновляется в реальном времени</p></div>
-        <div class="filter" id="lobbyFilter">
-          <button class="filter-active" data-filter="all">Все</button>
-          <button data-filter="classic">Подкидной</button>
-          <button data-filter="transfer">Переводной</button>
-        </div>
-      </section>
-      <section class="games-grid" id="gamesGrid"></section>
-
-      <section class="rules-brief">
-        <article class="rule-card"><span class="rule-icon">♠</span><h4>Подкидной</h4><p>Атакующий подкидывает карты того же достоинства, что уже на столе. Защищающийся отбивает или берёт.</p></article>
-        <article class="rule-card"><span class="rule-icon">♣</span><h4>Переводной</h4><p>Пока карты не отбиты, защищающийся переводит ход картой того же достоинства на следующего игрока.</p></article>
-        <article class="rule-card"><span class="rule-icon">♦</span><h4>Козырь</h4><p>Козырь бьёт любую некозырную карту. Старшая карта одной масти бьёт младшую.</p></article>
-      </section>
-      </div>
-
-      <section class="game-screen" id="gameScreen">
-        <header class="game-top">
-          <button class="ghost-btn" id="leaveRoom">← В лобби</button>
-          <div class="table-title">
-            <strong id="tableName">Партия</strong>
-            <small id="tableMode">Подкидной · 36 карт</small>
-            <button class="code-btn" id="roomCode">КОД</button>
+        <header class="topbar">
+          <div><p class="eyebrow">ВАШ ВЕЧЕР. ВАША КОМПАНИЯ.</p><h1>Лобби</h1></div>
+          <div class="top-actions">
+            <button class="ghost-btn" id="historyBtn">История игр</button>
+            <button class="ghost-btn" id="joinRoomBtn">Войти по коду <span aria-hidden="true">↗</span></button>
+            <button class="primary-btn" id="createBtn"><span aria-hidden="true">+</span> Создать стол</button>
           </div>
-          <button class="ghost-btn" id="gameRules">Правила</button>
+        </header>
+        <section class="hero-banner" aria-labelledby="heroTitle">
+          <div class="hero-copy">
+            <div class="tag hero-kicker"><span aria-hidden="true">♠</span> КЛАССИКА В ХОРОШЕЙ КОМПАНИИ</div>
+            <h2 id="heroTitle">Карты на стол.<br><em>Друзей за стол.</em></h2>
+            <p>Любимая игра, где бы вы ни были.<br>Создайте стол и пригласите своих.</p>
+            <button class="hero-btn" id="heroCreateBtn">Собрать компанию <span aria-hidden="true">↗</span></button>
+            <div class="hero-footer"><span>2–6 игроков</span><span>36 или 52 карты</span><span>Без регистрации</span></div>
+          </div>
+          <div class="hero-cards" aria-hidden="true">
+            <div class="playing-card dark-card c1"><span class="hero-card-rank">Т<small>♣</small></span><span class="hero-card-suit">♣</span><span class="hero-card-bottom">Т<small>♣</small></span></div>
+            <div class="playing-card red-card c2"><span class="hero-card-rank">Т<small>♦</small></span><span class="hero-card-suit">♦</span><span class="hero-card-bottom">Т<small>♦</small></span></div>
+            <div class="playing-card red-card c3"><span class="hero-card-rank">Т<small>♥</small></span><span class="hero-card-suit">♥</span><span class="hero-card-bottom">Т<small>♥</small></span></div>
+            <div class="playing-card dark-card c4"><span class="hero-card-rank">Т<small>♠</small></span><span class="hero-card-suit">♠</span><span class="hero-card-bottom">Т<small>♠</small></span></div>
+            <span class="hero-note">ХОД ЗА ВАМИ</span>
+            <div class="hero-seal" aria-hidden="true"><span>♠</span><small>ЗАКРЫТЫЙ<br>КЛУБ</small></div>
+          </div>
+        </section>
+        <div class="ornament" aria-hidden="true"><i></i><span>♠</span><i></i><span>♥</span><i></i><span>♦</span><i></i><span>♣</span><i></i></div>
+        <section class="section-head" aria-labelledby="openGamesTitle">
+          <div><p class="eyebrow">НАЙДИТЕ СВОЮ КОМПАНИЮ</p><h2 id="openGamesTitle">Открытые столы <span id="roomCount"></span></h2><p class="connection-status" id="connectionStatus" role="status">Соединяемся с клубом…</p></div>
+          <div class="filter" id="lobbyFilter" role="group" aria-label="Режим игры">
+            <button class="filter-active" data-filter="all" aria-pressed="true">Все</button>
+            <button data-filter="classic" aria-pressed="false">Подкидной</button>
+            <button data-filter="transfer" aria-pressed="false">Переводной</button>
+          </div>
+        </section>
+        <section class="games-grid" id="gamesGrid" aria-label="Список открытых столов" aria-busy="true"></section>
+        <section class="rules-brief" aria-label="Коротко об игре">
+          <article class="rule-card"><span class="rule-icon" aria-hidden="true">01</span><h3>Подкидной</h3><p>Знакомая классика. Подкидывайте карты того же достоинства, что уже на столе.</p></article>
+          <article class="rule-card"><span class="rule-icon" aria-hidden="true">02</span><h3>Переводной</h3><p>Добавьте интригу. Переведите ход картой того же достоинства на соседа.</p></article>
+          <article class="rule-card"><span class="rule-icon" aria-hidden="true">03</span><h3>Всё по правилам</h3><p>Мы проверяем ходы и считаем карты. Вам остаётся наслаждаться партией.</p></article>
+        </section>
+        <footer class="lobby-footer"><span>Дурак онлайн · Для своих</span><span aria-hidden="true">♠ <span>♥</span> ♦ ♣</span><span>Хорошего вечера и удачной карты.</span></footer>
+      </div>
+      <section class="game-screen" id="gameScreen" aria-label="Игровой стол">
+        <header class="game-top">
+          <button class="ghost-btn" id="leaveRoom">← Покинуть стол</button>
+          <div class="table-title"><strong id="tableName">Партия</strong><small id="tableMode">Подкидной · 36 карт</small><button class="code-btn" id="roomCode" title="Скопировать приглашение">КОД</button></div>
+          <button class="ghost-btn" id="gameRules">Правила игры</button>
         </header>
         <div class="table">
+          <div class="table-emblem" aria-hidden="true"><span>♠</span><small>ДУРАК · КЛУБ</small></div>
           <div class="seats" id="seats"></div>
-          <div class="deck" id="deckBox">
-            <div class="deck-card" id="trumpCard"><span></span><small>Козырь</small></div>
-            <div class="deck-count"><span id="deckCount">0</span> в колоде</div>
-          </div>
+          <div class="deck" id="deckBox"><div class="deck-card" id="trumpCard"><span></span><small>Козырь</small></div><div class="deck-count"><span id="deckCount">0</span> в колоде</div></div>
           <div class="table-cards" id="tableCards"></div>
-          <div class="table-message" id="tableMessage"></div>
-          <div class="my-hand" id="myHand"></div>
+          <div class="table-message" id="tableMessage" role="status"></div>
+          <div class="my-hand" id="myHand" aria-label="Ваши карты"></div>
         </div>
         <div class="game-actions" id="gameActions"></div>
         <div class="finish-overlay" id="finishOverlay"></div>
       </section>
     </main>
   </div>
-
-  <div class="modal-backdrop" id="modalBackdrop">
-    <div class="modal">
-      <button class="close-btn" id="modalClose">×</button>
+  <div class="modal-backdrop" id="modalBackdrop" aria-hidden="true" inert>
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Окно карточного клуба" tabindex="-1">
+      <button class="close-btn" id="modalClose" aria-label="Закрыть окно">×</button>
       <div id="modalBody"></div>
     </div>
   </div>
-  <div class="toast" id="toast"></div>
-
-  <script src="app.js?v=4"></script>
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+  <script src="app.js?v=7"></script>
 </body>
 </html>

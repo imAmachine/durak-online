@@ -38,6 +38,8 @@ const state = {
   view: 'lobby',
   autoOpen: true,
   source: null,
+  connected: false,
+  actionPending: false,
 };
 
 function loadProfile() {
@@ -104,12 +106,14 @@ function applyTheme(theme) {
   }
   const button = document.querySelector('#themeToggle');
   if (button) button.textContent = theme === 'dark' ? 'Светлая тема' : 'Тёмная тема';
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = theme === 'dark' ? '#080d0a' : '#efe9dc';
 }
 function storedTheme() {
   try {
-    return localStorage.getItem('durak.theme') || 'light';
+    return localStorage.getItem('durak.theme') || 'dark';
   } catch (error) {
-    return 'light';
+    return 'dark';
   }
 }
 applyTheme(storedTheme());
@@ -119,20 +123,62 @@ document.querySelector('#themeToggle').addEventListener('click', () => {
 
 /* modal */
 const backdrop = document.querySelector('#modalBackdrop');
+let modalTrigger = null;
 function openModal(html, onMount) {
-  document.querySelector('#modalBody').innerHTML = html;
+  if (!backdrop.classList.contains('open')) modalTrigger = document.activeElement;
+  const body = document.querySelector('#modalBody');
+  body.innerHTML = html;
+  backdrop.inert = false;
+  backdrop.setAttribute('aria-hidden', 'false');
   backdrop.classList.add('open');
-  if (onMount) onMount(document.querySelector('#modalBody'));
+  document.querySelector('#appShell').inert = true;
+  document.body.classList.add('modal-open');
+  const heading = body.querySelector('h2');
+  if (heading) {
+    heading.id = 'modalTitle';
+    backdrop.querySelector('.modal').setAttribute('aria-labelledby', 'modalTitle');
+  }
+  if (onMount) onMount(body);
+  (body.querySelector('input, select, button') || backdrop.querySelector('#modalClose')).focus();
 }
 function closeModal() {
   backdrop.classList.remove('open');
+  document.querySelector('#appShell').inert = false;
+  document.body.classList.remove('modal-open');
+  if (modalTrigger && modalTrigger.isConnected) modalTrigger.focus();
+  backdrop.inert = true;
+  backdrop.setAttribute('aria-hidden', 'true');
 }
 document.querySelector('#modalClose').addEventListener('click', closeModal);
+let backdropPressStarted = false;
+backdrop.addEventListener('pointerdown', event => {
+  backdropPressStarted = event.target === backdrop;
+});
+backdrop.addEventListener('pointerup', event => {
+  if (backdropPressStarted && event.target === backdrop) closeModal();
+  backdropPressStarted = false;
+});
+backdrop.addEventListener('pointercancel', () => {
+  backdropPressStarted = false;
+});
 backdrop.addEventListener('click', event => {
-  if (event.target === backdrop) closeModal();
+  if (event.target === backdrop) event.preventDefault();
 });
 document.addEventListener('keydown', event => {
+  if (!backdrop.classList.contains('open')) return;
   if (event.key === 'Escape') closeModal();
+  if (event.key === 'Tab') {
+    const controls = [...backdrop.querySelectorAll('button:not(:disabled), input, select, [tabindex="0"]')].filter(element => element.getClientRects().length);
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 });
 
 /* profile */
@@ -172,16 +218,20 @@ function openProfileModal() {
     root.querySelector('#mSave').addEventListener('click', async () => {
       const name = root.querySelector('#mName').value.trim().slice(0, 20);
       if (!name) return toast('Введите имя');
-      state.profile = { name, tint };
-      saveProfile();
-      renderProfile();
-      closeModal();
+      const button = root.querySelector('#mSave');
+      if (button.disabled) return;
+      button.disabled = true;
       try {
         await api('/api/profile', { clientId, name });
+        state.profile = { name, tint };
+        saveProfile();
+        renderProfile();
+        closeModal();
+        toast('Профиль сохранён');
       } catch (error) {
+        button.disabled = false;
         toast(error.message);
       }
-      toast('Профиль сохранён');
     });
   });
 }
@@ -191,11 +241,19 @@ function renderLobby() {
   document.querySelector('#onlineCount').textContent = state.lobby.online;
   const grid = document.querySelector('#gamesGrid');
   const rooms = state.lobby.rooms.filter(room => state.filter === 'all' || room.mode === state.filter);
-  if (!rooms.length) {
-    grid.innerHTML = '<div class="empty-state">Открытых игр пока нет. Создайте лобби и позовите друзей.</div>';
+  document.querySelector('#roomCount').textContent = rooms.length ? String(rooms.length).padStart(2, '0') : '';
+  grid.setAttribute('aria-busy', String(!state.connected));
+  if (!state.connected) {
+    grid.innerHTML = '<div class="empty-state"><span class="empty-symbol" aria-hidden="true">♠</span><h3>Готовим столы</h3><p>Ждём соединения с сервером. Подключимся автоматически.</p></div>';
     return;
   }
-  grid.innerHTML = rooms.map(room => {
+  if (!rooms.length) {
+    const filtered = state.filter !== 'all';
+    grid.innerHTML = `<div class="empty-state"><span class="empty-symbol" aria-hidden="true">♠</span><div><h3>${filtered ? 'Таких столов пока нет' : 'Первый стол сегодня за вами'}</h3><p>${filtered ? 'Выберите другой режим или создайте свой стол.' : 'Пригласите друзей. Для хорошей партии достаточно двоих.'}</p></div><button class="secondary-btn" id="emptyCreateBtn">Создать стол <span aria-hidden="true">↗</span></button></div>`;
+    grid.querySelector('#emptyCreateBtn').addEventListener('click', openCreateModal);
+    return;
+  }
+  const markup = rooms.map(room => {
     const modeLabel = room.mode === 'transfer' ? 'Переводной' : 'Подкидной';
     const playing = room.status === 'playing';
     const mine = Boolean(state.game && state.game.room.id === room.id);
@@ -203,7 +261,7 @@ function renderLobby() {
       <article class="game-card">
         <div class="game-head">
           <div>
-            <h4 class="game-title">${esc(room.name)}</h4>
+            <h3 class="game-title">${esc(room.name)}</h3>
             <div class="game-meta">Создатель: ${esc(room.host)}</div>
           </div>
           <span class="mode ${room.mode}">${modeLabel}</span>
@@ -216,6 +274,8 @@ function renderLobby() {
       </article>
     `;
   }).join('');
+  if (grid.innerHTML === markup) return;
+  grid.innerHTML = markup;
   grid.querySelectorAll('.join-btn').forEach(button => {
     button.addEventListener('click', () => {
       if (state.game && state.game.room.id === button.dataset.room) return setView('game');
@@ -228,7 +288,10 @@ document.querySelector('#lobbyFilter').addEventListener('click', event => {
   const button = event.target.closest('button[data-filter]');
   if (!button) return;
   state.filter = button.dataset.filter;
-  document.querySelectorAll('#lobbyFilter button').forEach(item => item.classList.toggle('filter-active', item === button));
+  document.querySelectorAll('#lobbyFilter button').forEach(item => {
+    item.classList.toggle('filter-active', item === button);
+    item.setAttribute('aria-pressed', String(item === button));
+  });
   renderLobby();
 });
 
@@ -309,12 +372,19 @@ function openJoinModal(code = '') {
     const submit = async () => {
       const value = input.value.trim();
       if (!value) return toast('Введите код приглашения');
-      await joinRoom(value);
-      closeModal();
+      const button = root.querySelector('#mJoin');
+      if (button.disabled) return;
+      button.disabled = true;
+      const joined = await joinRoom(value);
+      if (joined) closeModal();
+      else button.disabled = false;
     };
     root.querySelector('#mJoin').addEventListener('click', submit);
     input.addEventListener('keydown', event => {
-      if (event.key === 'Enter') submit();
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        submit();
+      }
     });
   });
 }
@@ -359,35 +429,17 @@ function openSettingsModal() {
   openModal(`
     <div class="modal-label">НАСТРОЙКИ</div>
     <h2>Настройки</h2>
-    <p class="modal-subtitle">Внешний вид и учётная запись</p>
+    <p class="modal-subtitle">Тема клуба. Имя и аватар меняются в карточке профиля.</p>
     <label>Тема
       <select id="mTheme">
         <option value="light" ${document.documentElement.dataset.theme === 'light' ? 'selected' : ''}>Светлая</option>
         <option value="dark" ${document.documentElement.dataset.theme === 'dark' ? 'selected' : ''}>Тёмная</option>
       </select>
     </label>
-    <label>Имя игрока<input id="mSettingsName" maxlength="20" value="${esc(state.profile.name)}"></label>
-    <div class="modal-actions">
-      <button class="secondary-btn" id="mSettingsProfile">Аватар</button>
-      <button class="primary-btn" id="mSettingsSave">Сохранить</button>
-    </div>
+    <button class="primary-btn full" id="mSettingsDone">Готово</button>
   `, root => {
     root.querySelector('#mTheme').addEventListener('change', event => applyTheme(event.target.value));
-    root.querySelector('#mSettingsProfile').addEventListener('click', openProfileModal);
-    root.querySelector('#mSettingsSave').addEventListener('click', async () => {
-      const name = root.querySelector('#mSettingsName').value.trim().slice(0, 20);
-      if (!name) return toast('Введите имя');
-      state.profile = { ...state.profile, name };
-      saveProfile();
-      renderProfile();
-      closeModal();
-      try {
-        await api('/api/profile', { clientId, name });
-      } catch (error) {
-        toast(error.message);
-      }
-      toast('Настройки сохранены');
-    });
+    root.querySelector('#mSettingsDone').addEventListener('click', closeModal);
   });
 }
 
@@ -415,7 +467,12 @@ function setView(view) {
   const gameActive = view === 'game' && Boolean(state.game);
   document.querySelector('#lobbyView').style.display = gameActive ? 'none' : '';
   document.querySelector('#gameScreen').classList.toggle('active', gameActive);
-  document.querySelectorAll('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.view === view || (view === 'game' && item.dataset.view === 'mygames')));
+  document.querySelectorAll('.nav-item').forEach(item => {
+    const active = item.dataset.view === view || (view === 'game' && item.dataset.view === 'mygames');
+    item.classList.toggle('active', active);
+    if (active) item.setAttribute('aria-current', 'page');
+    else item.removeAttribute('aria-current');
+  });
   updateResumeButton();
   if (view === 'lobby') renderLobby();
 }
@@ -441,6 +498,12 @@ function updateResumeButton() {
 function connect() {
   if (state.source) state.source.close();
   state.source = new EventSource(`/events?id=${encodeURIComponent(clientId)}&name=${encodeURIComponent(state.profile.name)}`);
+  state.source.onopen = () => {
+    state.connected = true;
+    document.querySelector('#connectionStatus').textContent = 'Столы обновляются в реальном времени';
+    document.querySelector('#connectionStatus').dataset.status = 'online';
+    renderLobby();
+  };
   state.source.onmessage = event => {
     let payload;
     try {
@@ -469,7 +532,10 @@ function connect() {
     }
   };
   state.source.onerror = () => {
-    /* браузер переподключится сам */
+    state.connected = false;
+    document.querySelector('#connectionStatus').textContent = 'Связь потеряна. Переподключаемся…';
+    document.querySelector('#connectionStatus').dataset.status = 'offline';
+    renderLobby();
   };
 }
 
@@ -482,12 +548,18 @@ function sortHand(hand) {
 
 function cardHTML(card, extraClass = '') {
   const red = card.suit === '♥' || card.suit === '♦';
-  return `<div class="card-face ${red ? 'red' : ''} ${extraClass}">${esc(card.rank)}${card.suit}</div>`;
+  return `<div class="card-face ${red ? 'red' : ''} ${extraClass}"><span class="card-corner">${esc(card.rank)}<i>${card.suit}</i></span><span class="card-suit">${card.suit}</span></div>`;
+}
+
+function cardBackHTML(extraClass = '') {
+  return `<span class="card-back ${extraClass}" aria-hidden="true"><i></i><b>♠</b></span>`;
 }
 
 function renderGame() {
   const game = state.game;
   if (!game) return;
+  const previousHand = new Set([...document.querySelectorAll('.hand-card')].map(button => button.dataset.card));
+  const previousTable = new Set([...document.querySelectorAll('[data-target-card]')].map(card => card.dataset.targetCard));
   document.querySelector('#tableName').textContent = game.room.name;
   const modeLabel = game.room.mode === 'transfer' ? 'Переводной' : 'Подкидной';
   document.querySelector('#tableMode').textContent = `${modeLabel} · ${game.room.deckSize} карт${game.trump ? ` · козырь ${game.trump}` : ''}`;
@@ -502,7 +574,7 @@ function renderGame() {
 
   const table = document.querySelector('#tableCards');
   table.innerHTML = game.table.length
-    ? game.table.map(row => `<div class="pair"><div class="card-face attack ${row.defense ? '' : 'target'}" data-target-card="${esc(row.attack.id)}">${esc(row.attack.rank)}${row.attack.suit}</div>${row.defense ? cardHTML(row.defense, 'defense') : ''}</div>`).join('')
+    ? game.table.map(row => `<div class="pair">${cardHTML(row.attack, `attack ${row.defense ? '' : 'target'}`).replace('<div ', `<div data-target-card="${esc(row.attack.id)}" `)}${row.defense ? cardHTML(row.defense, 'defense') : ''}</div>`).join('')
     : '';
   table.querySelectorAll('.target').forEach(target => {
     target.addEventListener('dragover', event => event.preventDefault());
@@ -529,7 +601,7 @@ function renderGame() {
     <div class="seat pos-${index + 1} ${player.id === game.turnId ? 'turn' : ''} ${player.connected ? '' : 'offline'}">
       <span class="mini-avatar" style="background:${tintOf(player.name)}">${esc(initials(player.name))}</span>
       <strong>${esc(player.name)}</strong>
-      <span class="seat-cards">${player.finished ? 'вышел' : `${player.cards} карт`}</span>
+      <span class="seat-cards">${player.finished ? 'вышел' : player.cards ? `<span class="opponent-hand">${Array.from({ length: Math.min(player.cards, 10) }, () => cardBackHTML()).join('')}</span><small>${player.cards} карт</small>` : 'нет карт'}</span>
       ${!player.finished && player.role === 'attacker' ? '<span class="seat-role attacker">атакует</span>' : ''}
       ${!player.finished && player.role === 'defender' ? '<span class="seat-role defender">защищается</span>' : ''}
     </div>
@@ -549,14 +621,23 @@ function renderGame() {
   };
   document.querySelector('#myHand').innerHTML = hand.map(card => {
     const red = card.suit === '♥' || card.suit === '♦';
-    return `<button class="hand-card ${red ? 'red' : ''} ${dimmed(card) ? 'dim' : ''}" data-card="${esc(card.id)}">${esc(card.rank)}<span>${card.suit}</span></button>`;
+    return `<button class="hand-card ${red ? 'red' : ''} ${dimmed(card) ? 'dim' : ''}" data-card="${esc(card.id)}"><span class="hand-corner">${esc(card.rank)}<i>${card.suit}</i></span><span class="hand-suit">${card.suit}</span></button>`;
   }).join('');
-  document.querySelectorAll('.hand-card').forEach(button => {
+  document.querySelectorAll('.hand-card').forEach((button, index) => {
+    button.setAttribute('aria-label', button.dataset.card);
+    if (!previousHand.has(button.dataset.card) && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      button.animate([{ opacity: 0, transform: 'translateY(18px)' }, { opacity: 1, transform: 'translateY(0)' }], { duration: 380, delay: Math.min(index * 35, 210), easing: 'cubic-bezier(.22,1,.36,1)', fill: 'backwards' });
+    }
     button.draggable = true;
     button.addEventListener('dragstart', event => event.dataTransfer.setData('text/plain', button.dataset.card));
     button.addEventListener('click', () => playCard(button.dataset.card));
   });
 
+  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    table.querySelectorAll('[data-target-card]').forEach(card => {
+      if (!previousTable.has(card.dataset.targetCard)) card.animate([{ opacity: 0, transform: 'translateY(12px) rotate(-4deg)' }, { opacity: 1, transform: 'translateY(0) rotate(0)' }], { duration: 320, easing: 'cubic-bezier(.22,1,.36,1)' });
+    });
+  }
   renderActions(game);
   renderFinish(game);
 }
@@ -609,20 +690,29 @@ async function playCard(cardId, targetCardId = null) {
   if (game.you.role === 'defender') {
     if (game.takePending) return toast('Вы уже решили взять карты');
     if (!game.canDefend) return toast('Сейчас отбивать нечего');
-    const row = game.table.find(item => !item.defense);
+    const row = targetCardId
+      ? game.table.find(item => !item.defense && item.attack.id === targetCardId)
+      : game.table.find(item => !item.defense && beats(item.attack, card, game.trump)) || game.table.find(item => !item.defense);
     if (row && !beats(row.attack, card, game.trump)) {
       return toast(`Карта ${card.rank}${card.suit} не бьёт ${row.attack.rank}${row.attack.suit}`);
     }
-    return act('defend', cardId, targetCardId);
+    return act('defend', cardId, row ? row.attack.id : targetCardId);
   }
   toast('Сейчас ходит другой игрок');
 }
 
 async function act(action, cardId, targetCardId = null) {
+  if (state.actionPending) return;
+  if (!state.connected) return toast('Нет связи с сервером. Переподключаемся…');
+  state.actionPending = true;
+  document.querySelector('#gameScreen').setAttribute('aria-busy', 'true');
   try {
     await api('/api/action', { clientId, action, cardId, targetCardId });
   } catch (error) {
     toast(error.message);
+  } finally {
+    state.actionPending = false;
+    document.querySelector('#gameScreen').setAttribute('aria-busy', 'false');
   }
 }
 
@@ -669,7 +759,16 @@ async function leaveRoom() {
   document.querySelector('#finishOverlay').classList.remove('open');
   setView('lobby');
 }
-document.querySelector('#leaveRoom').addEventListener('click', leaveRoom);
+document.querySelector('#leaveRoom').addEventListener('click', () => {
+  if (!state.game || state.game.room.status !== 'playing') return leaveRoom();
+  openModal('<div class="modal-label">ПОКИНУТЬ СТОЛ</div><h2>Уже уходите?</h2><p class="modal-subtitle">Вы выйдете из текущей партии. Другие игроки продолжат без вас.</p><div class="modal-actions"><button class="secondary-btn" id="stayAtTable">Остаться</button><button class="primary-btn" id="confirmLeave">Покинуть стол</button></div>', root => {
+    root.querySelector('#stayAtTable').addEventListener('click', closeModal);
+    root.querySelector('#confirmLeave').addEventListener('click', async () => {
+      await leaveRoom();
+      closeModal();
+    });
+  });
+});
 
 /* start */
 renderLobby();
