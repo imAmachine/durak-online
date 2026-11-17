@@ -1,12 +1,12 @@
 <!doctype html>
-<html lang="ru" data-theme="dark">
+<html lang="ru">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#080d0a">
   <meta name="description" content="Дурак онлайн для своей компании. Создайте стол, отправьте друзьям код и сыграйте в подкидного или переводного.">
   <title>Дурак Онлайн · Карточный клуб</title>
-  <link rel="stylesheet" href="style.css?v=48">
+  <link rel="stylesheet" href="style.css?v=53">
 </head>
 <body>
   <div class="ambient" aria-hidden="true">
@@ -14,6 +14,7 @@
     <div class="ambient-layer ambient-mid"></div>
     <div class="ambient-glass"></div>
     <div class="ambient-layer ambient-near"></div>
+    <div class="ambient-frost"></div>
     <div class="ambient-haze"></div>
   </div>
   <a class="skip-link" href="#main">Перейти к содержимому</a>
@@ -29,13 +30,11 @@
         <button class="nav-item active" data-view="lobby" aria-label="Лобби" aria-current="page"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Лобби</span></button>
         <button class="nav-item" data-view="mygames" aria-label="Мои игры"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="8" y="3" width="12" height="17" rx="2"/><path d="M5 6H4a1 1 0 0 0-1 1v13a2 2 0 0 0 2 2h11M12 8h4m-4 4h4"/></svg><span>Мои игры</span></button>
         <button class="nav-item" data-view="rules" aria-label="Правила"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 5C8 2 3 4 3 4v15s5-2 9 1c4-3 9-1 9-1V4s-5-2-9 1Zm0 0v15"/></svg><span>Правила</span></button>
-        <button class="nav-item" data-view="settings" aria-label="Настройки"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="var(--panel)"/><circle cx="15" cy="17" r="3" fill="var(--panel)"/></svg><span>Настройки</span></button>
         <button class="nav-item" data-view="admin" aria-label="Панель администратора" hidden><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 3 5 6v6c0 4 3 7 7 9 4-2 7-5 7-9V6l-7-3Z"/><path d="M9.5 12.5 11 14l3.5-3.5"/></svg><span>Клуб</span></button>
       </nav>
       <div class="side-bottom">
         <div class="sidebar-note">Хорошая партия начинается<br>с хорошей компании.</div>
         <div class="online"><i aria-hidden="true"></i><span id="onlineCount">0</span> в клубе</div>
-        <button class="theme-toggle" id="themeToggle">Тёмная тема</button>
       </div>
     </aside>
     <main class="main-content" id="main" tabindex="-1">
@@ -121,6 +120,6 @@
     </div>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
-  <script src="app.js?v=27"></script>
+  <script src="app.js?v=31"></script>
 </body>
 </html>

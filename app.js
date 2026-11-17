@@ -136,31 +136,6 @@ function toast(message) {
   toastTimer = setTimeout(() => element.classList.remove('show'), 2600);
 }
 
-/* theme */
-function applyTheme(theme) {
-  document.documentElement.dataset.theme = theme;
-  try {
-    localStorage.setItem('durak.theme', theme);
-  } catch (error) {
-    /* тема не сохранится между визитами */
-  }
-  const button = document.querySelector('#themeToggle');
-  if (button) button.textContent = theme === 'dark' ? 'Светлая тема' : 'Тёмная тема';
-  const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.content = theme === 'dark' ? '#080d0a' : '#efe9dc';
-}
-function storedTheme() {
-  try {
-    return localStorage.getItem('durak.theme') || 'dark';
-  } catch (error) {
-    return 'dark';
-  }
-}
-applyTheme(storedTheme());
-document.querySelector('#themeToggle').addEventListener('click', () => {
-  applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
-});
-
 /* modal */
 const backdrop = document.querySelector('#modalBackdrop');
 let modalTrigger = null;
@@ -524,24 +499,6 @@ function openRulesModal() {
 }
 document.querySelector('#gameRules').addEventListener('click', openRulesModal);
 
-function openSettingsModal() {
-  openModal(`
-    <div class="modal-label">НАСТРОЙКИ</div>
-    <h2>Настройки</h2>
-    <p class="modal-subtitle">Тема клуба. Имя и аватар меняются в карточке профиля.</p>
-    <label>Тема
-      <select id="mTheme">
-        <option value="light" ${document.documentElement.dataset.theme === 'light' ? 'selected' : ''}>Светлая</option>
-        <option value="dark" ${document.documentElement.dataset.theme === 'dark' ? 'selected' : ''}>Тёмная</option>
-      </select>
-    </label>
-    <button class="primary-btn full" id="mSettingsDone">Готово</button>
-  `, root => {
-    root.querySelector('#mTheme').addEventListener('change', event => applyTheme(event.target.value));
-    root.querySelector('#mSettingsDone').addEventListener('click', closeModal);
-  });
-}
-
 /* admin */
 function adminKey() {
   try {
@@ -743,8 +700,6 @@ document.querySelectorAll('.nav-item').forEach(item => {
       });
     } else if (view === 'rules') {
       openRulesModal();
-    } else if (view === 'settings') {
-      openSettingsModal();
     } else if (view === 'admin') {
       openAdminPanel();
     }
@@ -810,6 +765,9 @@ function connect() {
       renderProfile();
       if (state.view === 'lobby') renderLobby();
     } else if (payload.type === 'game') {
+      const incomingSeq = Number(payload.state && payload.state.seq) || 0;
+      const currentSeq = Number(state.game && state.game.seq) || 0;
+      if (state.game && payload.state && payload.state.room && state.game.room && payload.state.room.id === state.game.room.id && incomingSeq < currentSeq) return;
       state.game = payload.state;
       if (state.autoOpen) {
         state.autoOpen = false;
@@ -900,10 +858,18 @@ function renderGame() {
   table.innerHTML = game.table.length
     ? game.table.map(row => `<div class="pair">${cardHTML(row.attack, `attack ${row.defense ? '' : 'target'}`).replace('<div ', `<div data-target-card="${esc(row.attack.id)}" `)}${row.defense ? cardHTML(row.defense, 'defense') : ''}</div>`).join('')
     : '';
+  table.addEventListener('dragover', event => event.preventDefault());
+  table.addEventListener('drop', event => {
+    if (event.target.closest('.target')) return;
+    event.preventDefault();
+    const cardId = event.dataTransfer.getData('text/plain');
+    if (cardId) playCard(cardId);
+  });
   table.querySelectorAll('.target').forEach(target => {
     target.addEventListener('dragover', event => event.preventDefault());
     target.addEventListener('drop', event => {
       event.preventDefault();
+      event.stopPropagation();
       const cardId = event.dataTransfer.getData('text/plain');
       if (cardId) playCard(cardId, target.dataset.targetCard);
     });
@@ -943,19 +909,24 @@ function renderGame() {
     if (attacking && game.table.length) return !ranksOnTable.has(card.rank);
     return false;
   };
-  document.querySelector('#myHand').innerHTML = hand.map(card => {
-    const red = card.suit === '♥' || card.suit === '♦';
-    return `<button class="hand-card ${red ? 'red' : ''} ${dimmed(card) ? 'dim' : ''}" data-card="${esc(card.id)}">${cardCornersHTML(card)}</button>`;
-  }).join('');
-  document.querySelectorAll('.hand-card').forEach((button, index) => {
-    button.setAttribute('aria-label', button.dataset.card);
-    if (!previousHand.has(button.dataset.card) && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      button.animate([{ opacity: 0, transform: 'translateY(18px)' }, { opacity: 1, transform: 'translateY(0)' }], { duration: 380, delay: Math.min(index * 35, 210), easing: 'cubic-bezier(.22,1,.36,1)', fill: 'backwards' });
-    }
-    button.draggable = true;
-    button.addEventListener('dragstart', event => event.dataTransfer.setData('text/plain', button.dataset.card));
-    button.addEventListener('click', () => playCard(button.dataset.card));
-  });
+  const handRoot = document.querySelector('#myHand');
+  const handSignature = `${game.room.id}:` + hand.map(card => `${card.id}${dimmed(card) ? '·' : ''}`).join(' ') + `|${game.trump || ''}`;
+  if (handRoot.dataset.signature !== handSignature) {
+    handRoot.dataset.signature = handSignature;
+    handRoot.innerHTML = hand.map(card => {
+      const red = card.suit === '♥' || card.suit === '♦';
+      return `<div class="hand-slot"><button class="hand-card ${red ? 'red' : ''} ${dimmed(card) ? 'dim' : ''}" data-card="${esc(card.id)}">${cardCornersHTML(card)}</button></div>`;
+    }).join('');
+    handRoot.querySelectorAll('.hand-card').forEach((button, index) => {
+      button.setAttribute('aria-label', button.dataset.card);
+      if (!previousHand.has(button.dataset.card) && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        button.animate([{ opacity: 0, transform: 'translateY(18px)' }, { opacity: 1, transform: 'translateY(0)' }], { duration: 380, delay: Math.min(index * 35, 210), easing: 'cubic-bezier(.22,1,.36,1)', fill: 'backwards' });
+      }
+      button.draggable = true;
+      button.addEventListener('dragstart', event => event.dataTransfer.setData('text/plain', button.dataset.card));
+      button.addEventListener('click', () => playCard(button.dataset.card));
+    });
+  }
 
   if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
     table.querySelectorAll('[data-card-id]').forEach(card => {
@@ -971,33 +942,49 @@ function renderGame() {
 function fitTable() {
   const row = document.querySelector('#tableCards');
   if (!row) return;
-  row.style.removeProperty('zoom');
-  if (!row.querySelector('.pair') || !row.clientWidth) return;
+  const zoom = row.style.getPropertyValue('zoom');
+  const apply = (property, value) => {
+    if (row.style.getPropertyValue(property) !== value) row.style.setProperty(property, value);
+  };
+  if (!row.querySelector('.pair') || !row.parentElement) {
+    apply('zoom', '');
+    return;
+  }
   const content = row.scrollWidth;
   if (!content) return;
-  const scale = row.clientWidth / content;
-  if (scale < .999) row.style.zoom = Math.max(.7, scale).toFixed(3);
+  const share = (parseFloat(getComputedStyle(row).getPropertyValue('--row-max')) || 88) / 100;
+  const room = share * row.parentElement.clientWidth;
+  const scale = room / content;
+  const next = scale < .98 ? Math.max(.7, scale).toFixed(3) : '';
+  if (next !== zoom) row.style.setProperty('zoom', next);
 }
 
 function fitHand() {
   const hand = document.querySelector('#myHand');
   if (!hand) return;
-  hand.style.removeProperty('zoom');
   const cards = hand.querySelectorAll('.hand-card');
-  const cardWidth = cards.length ? cards[0].offsetWidth : 0;
-  if (cards.length < 2 || !cardWidth || !hand.clientWidth) {
-    hand.style.removeProperty('--overlap');
-    return;
-  }
   const styles = getComputedStyle(hand);
   const padding = (parseFloat(styles.paddingLeft) || 0) + (parseFloat(styles.paddingRight) || 0);
-  const available = Math.max(0, hand.clientWidth - padding);
-  const minStep = Math.max(15, Math.min(34, cardWidth * .3));
-  const needed = (cards.length * cardWidth - available) / (cards.length - 1);
-  const overlap = Math.max(0, Math.min(cardWidth - minStep, Math.ceil(Math.max(needed, cardWidth * .12))));
-  hand.style.setProperty('--overlap', `${overlap}px`);
-  const total = cardWidth + (cards.length - 1) * (cardWidth - overlap);
-  if (total > available + 1) hand.style.zoom = Math.max(.6, available / total).toFixed(3);
+  const box = hand.parentElement ? hand.parentElement.clientWidth : hand.clientWidth;
+  const available = Math.max(0, box - padding);
+  const cardWidth = cards.length ? parseFloat(getComputedStyle(cards[0]).width) || cards[0].offsetWidth : 0;
+  const apply = (property, value) => {
+    if (hand.style.getPropertyValue(property) !== value) hand.style.setProperty(property, value);
+  };
+  if (cards.length < 2 || !cardWidth || !available) {
+    apply('--overlap', '');
+    apply('zoom', '');
+    return;
+  }
+  const count = cards.length;
+  const minStep = Math.max(24, Math.min(44, cardWidth * .33));
+  const scrolls = styles.overflowX === 'auto' || styles.overflowX === 'scroll';
+  const needed = (count * cardWidth - available) / (count - 1);
+  const overlap = Math.max(0, Math.min(cardWidth - minStep, Math.round(Math.max(scrolls ? 0 : needed, cardWidth * (scrolls ? .24 : .1)))));
+  const total = cardWidth + (count - 1) * (cardWidth - overlap);
+  const zoom = !scrolls && total > available + 8 ? Math.max(.7, available / total) : 1;
+  apply('--overlap', `${overlap}px`);
+  apply('zoom', zoom < .999 ? zoom.toFixed(3) : '');
 }
 
 function renderActions(game) {
@@ -1005,7 +992,6 @@ function renderActions(game) {
   const buttons = [];
   if (game.room.status === 'playing') {
     if (game.canTake) buttons.push({ label: game.takePending ? 'Забрать карты' : 'Взять карты', action: 'take', style: game.takePending ? 'primary-btn' : 'secondary-btn' });
-    if (game.canTransfer) buttons.push({ label: 'Перевести', action: 'transfer', style: 'secondary-btn' });
     if (game.canPass) buttons.push({ label: game.takePending ? 'Хватит, забирайте' : 'Бито', action: 'pass', style: 'primary-btn' });
     if (!buttons.length) buttons.push({ label: `Ход: ${game.turnName}`, action: null, style: 'secondary-btn', disabled: true });
   } else {
@@ -1023,7 +1009,7 @@ function renderActions(game) {
     if (!action) return;
     element.addEventListener('click', () => {
       if (action === 'copy') return copyInvite();
-      if (action === 'transfer') return selectTransferCard();
+      if (action === 'transfer') return toast('Перетащите карту нужного достоинства на стол');
       act(action);
     });
   });
@@ -1079,6 +1065,9 @@ async function playCard(cardId, targetCardId = null) {
     return act('attack', cardId);
   }
   if (game.you.role === 'defender') {
+    if (game.canTransfer && game.table.length && game.table.every(row => !row.defense) && card.rank === game.table[0].attack.rank) {
+      return act('transfer', cardId);
+    }
     if (game.takePending) return toast('Вы уже решили взять карты');
     if (!game.canDefend) return toast('Сейчас отбивать нечего');
     const row = targetCardId
