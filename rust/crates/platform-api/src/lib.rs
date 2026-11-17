@@ -1,3 +1,7 @@
+pub mod events;
+mod game;
+pub mod storage;
+
 use axum::{
     extract::{Query, State},
     http::{header, StatusCode, Uri},
@@ -5,11 +9,11 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    routing::{any, get},
+    routing::{any, get, post},
     Json, Router,
 };
 use futures_core::Stream;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::{
     collections::HashMap,
     convert::Infallible,
@@ -25,22 +29,23 @@ use std::{
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 
-const START_BALANCE: i64 = 1000;
-
 type SseResult = Result<Event, Infallible>;
 
 type ClientSender = mpsc::Sender<SseResult>;
 
 struct ClientEntry {
     generation: u64,
-    _sender: ClientSender,
+    sender: ClientSender,
+    name: String,
 }
 
 #[derive(Clone, Default)]
 pub struct AppState {
     sessions: Arc<RwLock<HashMap<String, String>>>,
     clients: Arc<RwLock<HashMap<String, ClientEntry>>>,
-    rooms: Arc<RwLock<HashMap<String, Value>>>,
+    rooms: Arc<RwLock<HashMap<String, game::Room>>>,
+    accounts: Arc<RwLock<HashMap<String, game::Account>>>,
+    pub event_hub: events::EventHub,
     next_client_generation: Arc<AtomicU64>,
 }
 
@@ -49,6 +54,15 @@ struct EventsQuery {
     id: Option<String>,
     token: Option<String>,
     name: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct WatchQuery {
+    id: Option<String>,
+    token: Option<String>,
+    until: Option<String>,
+    since: Option<u64>,
+    timeout: Option<u64>,
 }
 
 struct ClientStream {
@@ -75,6 +89,8 @@ impl Drop for ClientStream {
             let mut clients = state.clients.write().await;
             if clients.get(&id).map(|entry| entry.generation) == Some(generation) {
                 clients.remove(&id);
+                drop(clients);
+                game::disconnected(&state, &id).await;
             }
         });
     }
@@ -88,6 +104,13 @@ pub fn router_with_state(state: AppState) -> Router {
     Router::new()
         .route("/events", get(events))
         .route("/api/status", get(status))
+        .route("/api/watch", get(game::watch))
+        .route("/api/rooms", post(game::create))
+        .route("/api/join", post(game::join))
+        .route("/api/action", post(game::action))
+        .route("/api/leave", post(game::leave))
+        .route("/api/profile", post(game::profile))
+        .route("/api/admin", post(game::admin))
         .fallback(any(route))
         .with_state(state)
 }
@@ -116,20 +139,22 @@ async fn events(
         }
     }
 
-    let name = query.name.unwrap_or_else(|| "Игрок".into());
-    let account = json!({
-        "id": id.clone(),
-        "name": name,
-        "balance": START_BALANCE,
-        "games": 0,
-        "wins": 0,
-        "losses": 0,
-        "online": true
-    });
-    let lobby = json!({"type":"lobby", "online": state.clients.read().await.len() + 1, "rooms": [], "history": []});
-    let noroom = json!({"type":"noroom"});
+    let name: String = query
+        .name
+        .unwrap_or_else(|| "Игрок".into())
+        .chars()
+        .take(20)
+        .collect();
+    let account = {
+        let mut accounts = state.accounts.write().await;
+        let account = accounts
+            .entry(id.clone())
+            .or_insert_with(|| game::Account::new(&id, &name));
+        account.name = name.clone();
+        account.public(true)
+    };
     let retry = Event::default().retry(Duration::from_secs(2));
-    let (sender, receiver) = mpsc::channel(4);
+    let (sender, receiver) = mpsc::channel(128);
     let generation = state.next_client_generation.fetch_add(1, Ordering::Relaxed);
     {
         let mut clients = state.clients.write().await;
@@ -137,18 +162,18 @@ async fn events(
             id.clone(),
             ClientEntry {
                 generation,
-                _sender: sender.clone(),
+                sender: sender.clone(),
+                name,
             },
         );
     }
     for event in [
         retry,
         Event::default().data(json!({"type":"account", "account": account}).to_string()),
-        Event::default().data(noroom.to_string()),
-        Event::default().data(lobby.to_string()),
     ] {
         let _ = sender.send(Ok(event)).await;
     }
+    game::connected(&state, &id).await;
     let stream = ClientStream {
         inner: ReceiverStream::new(receiver),
         state,
@@ -163,9 +188,7 @@ async fn events(
 }
 
 async fn status(State(state): State<AppState>) -> impl IntoResponse {
-    let clients = state.clients.read().await.len();
-    let rooms = state.rooms.read().await;
-    Json(json!({"online": clients, "clients": [], "rooms": rooms.values().collect::<Vec<_>>() }))
+    game::api_status(&state).await
 }
 
 async fn route(uri: Uri) -> Response {
@@ -193,7 +216,10 @@ fn is_client_id(value: &str) -> bool {
     !value.is_empty()
 }
 fn is_token(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 fn error(status: StatusCode, message: &str) -> Response {
