@@ -1,7 +1,14 @@
-const base = 'http://localhost:4173';
+const base = process.env.BASE_URL || 'http://localhost:4173';
+const adminKey = process.env.ADMIN_KEY || 'test-only-secret';
+const tokens = new Map();
+function tokenFor(id) {
+  if (!tokens.has(id)) tokens.set(id, crypto.randomBytes(32).toString('hex'));
+  return tokens.get(id);
+}
 const players = {};
 let failures = 0;
 import http from 'node:http';
+import crypto from 'node:crypto';
 
 function sse(url, onMessage, onError) {
   const request = http.get(url, response => {
@@ -45,14 +52,15 @@ function stateOf(id) {
 }
 
 async function post(path, body) {
-  const response = await fetch(base + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const requestBody = body.clientId ? { ...body, token: body.token || tokenFor(body.clientId) } : body;
+  const response = await fetch(base + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) });
   return { status: response.status, data: await response.json().catch(() => ({})) };
 }
 
 function connect(id, name) {
   return new Promise((resolve, reject) => {
     players[id] = { state: null, account: null, source: null };
-    players[id].source = sse(`${base}/events?id=${id}&name=${encodeURIComponent(name)}`, payload => {
+    players[id].source = sse(`${base}/events?id=${encodeURIComponent(id)}&token=${tokenFor(id)}&name=${encodeURIComponent(name)}`, payload => {
       if (payload.type === 'game') players[id].state = payload.state;
       if (payload.type === 'account') players[id].account = payload.account;
     }, reject);
@@ -118,16 +126,16 @@ await post('/api/leave', { clientId: attacker });
 const denied = await post('/api/admin', { key: 'wrong', op: 'list' });
 check('панель закрыта без ключа', denied.status === 403, JSON.stringify(denied.data));
 
-const adminList = await post('/api/admin', { key: 'durak-admin', op: 'list' });
+const adminList = await post('/api/admin', { key: adminKey, op: 'list' });
 check('админ видит игроков', adminList.status === 200 && adminList.data.players.some(player => player.id === a), JSON.stringify(adminList.data).slice(0, 120));
 
 const before = adminList.data.players.find(player => player.id === a);
-const updated = await post('/api/admin', { key: 'durak-admin', op: 'update', id: a, name: 'Анна Клубная', balance: 5000, games: 7, wins: 5, losses: 2 });
+const updated = await post('/api/admin', { key: adminKey, op: 'update', id: a, name: 'Анна Клубная', balance: 5000, games: 7, wins: 5, losses: 2 });
 check('админ правит профиль', updated.status === 200 && updated.data.player.balance === 5000 && updated.data.player.name === 'Анна Клубная', JSON.stringify(updated.data));
 await waitFor(() => accountOf(a).name === 'Анна Клубная');
 check('правка доходит до игрока', accountOf(a).balance === 5000, JSON.stringify(accountOf(a)));
 
-const cheap = await post('/api/admin', { key: 'durak-admin', op: 'update', id: b, balance: 40 });
+const cheap = await post('/api/admin', { key: adminKey, op: 'update', id: b, balance: 40 });
 check('баланс можно понизить', cheap.status === 200 && cheap.data.player.balance === 40, JSON.stringify(cheap.data));
 const richRoom = await post('/api/rooms', { clientId: a, name: 'Дорогой стол', mode: 'classic', deckSize: 36, bet: 500, playerName: 'Анна Клубная' });
 check('дорогой стол создан', richRoom.status === 201, JSON.stringify(richRoom.data));
@@ -139,7 +147,7 @@ const bigBet = await post('/api/rooms', { clientId: a, name: 'Нет такой 
 check('недопустимая ставка обнуляется', bigBet.status === 201 && bigBet.data.room.bet === 0, JSON.stringify(bigBet.data));
 await post('/api/leave', { clientId: a });
 
-const reset = await post('/api/admin', { key: 'durak-admin', op: 'reset', id: a });
+const reset = await post('/api/admin', { key: adminKey, op: 'reset', id: a });
 check('сброс прогресса', reset.status === 200 && reset.data.player.balance === 1000 && reset.data.player.games === 0, JSON.stringify(reset.data));
 await waitFor(() => accountOf(a).balance === 1000);
 check('сброс виден игроку', accountOf(a).games === 0 && accountOf(a).balance === 1000, JSON.stringify(accountOf(a)));
@@ -148,3 +156,4 @@ console.log(`стартовый баланс был ${before.balance}`);
 players[a].source.destroy();
 players[b].source.destroy();
 console.log(failures ? `\n${failures} проверок провалено` : '\nденьги и админка работают');
+process.exitCode = failures ? 1 : 0;

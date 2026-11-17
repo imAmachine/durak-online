@@ -1,5 +1,11 @@
 import http from 'node:http';
-const base = 'http://localhost:4173';
+import crypto from 'node:crypto';
+const base = process.env.BASE_URL || 'http://localhost:4173';
+const tokens = new Map();
+function tokenFor(id) {
+  if (!tokens.has(id)) tokens.set(id, crypto.randomBytes(32).toString('hex'));
+  return tokens.get(id);
+}
 const players = {};
 let failures = 0;
 function check(label, ok, extra = '') {
@@ -21,8 +27,12 @@ function sse(url, onMessage) {
     });
   });
 }
-function connect(id) { return new Promise(r => { players[id] = {}; players[id].req = sse(`${base}/events?id=${id}`, p => { if (p.type === 'game') players[id].state = p.state; }); setTimeout(r, 300); }); }
-async function post(path, body) { const r = await fetch(base + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); return { status: r.status, data: await r.json().catch(() => ({})) }; }
+function connect(id) { return new Promise(r => { players[id] = {}; players[id].req = sse(`${base}/events?id=${encodeURIComponent(id)}&token=${tokenFor(id)}`, p => { if (p.type === 'game') players[id].state = p.state; }); setTimeout(r, 300); }); }
+async function post(path, body) {
+  const requestBody = body.clientId ? { ...body, token: body.token || tokenFor(body.clientId) } : body;
+  const r = await fetch(base + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) });
+  return { status: r.status, data: await r.json().catch(() => ({})) };
+}
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const RANKS = ['6','7','8','9','10','В','Д','К','Т'];
 const canBeat = (attack, defense, trump) => attack.suit === defense.suit ? RANKS.indexOf(defense.rank) > RANKS.indexOf(attack.rank) : defense.suit === trump && attack.suit !== trump;

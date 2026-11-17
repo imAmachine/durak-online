@@ -1,7 +1,13 @@
-const base = 'http://localhost:4173';
+const base = process.env.BASE_URL || 'http://localhost:4173';
+const tokens = new Map();
+function tokenFor(id) {
+  if (!tokens.has(id)) tokens.set(id, crypto.randomBytes(32).toString('hex'));
+  return tokens.get(id);
+}
 const players = {};
 let failures = 0;
 import http from 'node:http';
+import crypto from 'node:crypto';
 
 function sse(url, onMessage, onError) {
   const request = http.get(url, response => {
@@ -41,14 +47,15 @@ function stateOf(id) {
 }
 
 async function post(path, body) {
-  const response = await fetch(base + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const requestBody = body.clientId ? { ...body, token: body.token || tokenFor(body.clientId) } : body;
+  const response = await fetch(base + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) });
   return { status: response.status, data: await response.json().catch(() => ({})) };
 }
 
 function connect(id, name) {
   return new Promise((resolve, reject) => {
     players[id] = { state: null, source: null };
-    players[id].source = sse(`${base}/events?id=${id}&name=${encodeURIComponent(name)}`, payload => {
+    players[id].source = sse(`${base}/events?id=${encodeURIComponent(id)}&token=${tokenFor(id)}&name=${encodeURIComponent(name)}`, payload => {
       if (payload.type === 'game') players[id].state = payload.state;
       if (payload.type === 'lobby') players[id].online = payload.online;
     }, reject);
@@ -113,6 +120,10 @@ function findCard(id, predicate) { return handOf(id).find(predicate); }
 const wrongTurn = await post('/api/action', { clientId: defender, action: 'attack', cardId: handOf(defender)[0].id });
 check('защищающийся не может атаковать', wrongTurn.status === 400, JSON.stringify(wrongTurn.data));
 
+const bystander = ids.find(id => id !== attacker && id !== defender);
+const premature = await post('/api/action', { clientId: bystander, action: 'attack', cardId: handOf(bystander)[0].id });
+check('первый ход принадлежит только атакующему', premature.status === 400, JSON.stringify(premature.data));
+
 const shareRank = handOf(attacker).find(card => handOf(defender).some(item => item.rank === card.rank));
 const firstCard = shareRank || handOf(attacker)[0];
 const attacked = await post('/api/action', { clientId: attacker, action: 'attack', cardId: firstCard.id });
@@ -123,7 +134,15 @@ const tableOnlyDefendsTheirRank = await post('/api/action', {
   action: 'attack',
   cardId: (findCard(attacker, card => card.id !== firstCard.id && card.rank !== firstCard.rank) || {}).id,
 });
-check('подкидывать чужим достоинством нельзя', tableOnlyDefendsTheirRank.status === 400 || !tableOnlyDefendsTheirRank.data.error, JSON.stringify(tableOnlyDefendsTheirRank.data));
+check('подкидывать чужим достоинством нельзя', tableOnlyDefendsTheirRank.status === 400, JSON.stringify(tableOnlyDefendsTheirRank.data));
+
+const thirdCard = findCard(bystander, card => card.rank === firstCard.rank);
+if (thirdCard) {
+  const thrown = await post('/api/action', { clientId: bystander, action: 'attack', cardId: thirdCard.id });
+  check('третий активный игрок может подкинуть после первого хода', thrown.status === 200, JSON.stringify(thrown.data));
+} else {
+  console.log('skip подкидывание третьим: нет карты нужного достоинства');
+}
 
 const sameRank = findCard(attacker, card => card.rank === firstCard.rank);
 if (sameRank) {
@@ -133,6 +152,8 @@ if (sameRank) {
 
 const transferCard = findCard(defender, card => card.rank === firstCard.rank);
 if (transferCard) {
+  const missingCard = await post('/api/action', { clientId: defender, action: 'transfer' });
+  check('перевод без cardId отклонён', missingCard.status === 400, JSON.stringify(missingCard.data));
   const before = { attacker: stateOf(a).attackerId, defender: stateOf(a).defenderId };
   const transferred = await post('/api/action', { clientId: defender, action: 'transfer', cardId: transferCard.id });
   check('перевод хода картой того же достоинства', transferred.status === 200, JSON.stringify(transferred.data));
@@ -162,8 +183,9 @@ check('взятые карты остаются в руке', [a, b, c].some(id 
 
 const leave = await post('/api/leave', { clientId: c });
 check('выход из лобби', leave.status === 200);
-await waitFor(() => stateOf(a).players.length === 2);
-check('после выхода осталось два игрока', stateOf(a).players.length === 2, String(stateOf(a).players.length));
+await waitFor(() => stateOf(a).room.status === 'finished');
+check('выход активного игрока завершает партию', stateOf(a).room.status === 'finished');
+check('ушедшему засчитано поражение', stateOf(a).finished?.loserId === c, JSON.stringify(stateOf(a).finished));
 
 players[a].source.destroy();
 players[b].source.destroy();

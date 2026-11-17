@@ -19,7 +19,27 @@ function readClientId() {
   return newId();
 }
 
+function readSessionToken() {
+  let saved = null;
+  try {
+    saved = sessionStorage.getItem('durak.token');
+  } catch (error) {
+    saved = null;
+  }
+  if (/^[a-f0-9]{64}$/.test(saved || '')) return saved;
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const token = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  try {
+    sessionStorage.setItem('durak.token', token);
+  } catch (error) {
+    return token;
+  }
+  return token;
+}
+
 const clientId = readClientId();
+const sessionToken = readSessionToken();
 try {
   sessionStorage.setItem('durak.client', clientId);
 } catch (error) {
@@ -100,7 +120,7 @@ function avatarHTML(name, className = 'mini-avatar') {
 }
 
 async function api(path, body) {
-  const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, ...(body.clientId ? { token: sessionToken } : {}) }) });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || 'Не удалось выполнить действие');
   return data;
@@ -482,14 +502,15 @@ const RULES_HTML = `
   <p class="modal-subtitle">Сервер сам проверяет ходы, подкидывание, козыри и перевод</p>
   <ul class="rules-list">
     <li>Козырь определяется по нижней карте колоды и бьёт любую некозырную масть.</li>
-    <li>Внутри одной масти старшая карта бьёт младшую.</li>
-    <li>Подкидывать карты того же достоинства, что уже есть на столе (включая отбитые), можно в любом режиме, но не больше шести за ход.</li>
+    <li>Внутри одной масти старшая карта бьёт младшую. Первым ходит владелец младшего козыря.</li>
+    <li>После первой атаки подкидывать могут все активные игроки, кроме защитника. Достоинство должно быть на столе (включая отбитые карты). Лимит: шесть атак за ход и не больше неотбитых карт, чем карт в руке защитника.</li>
     <li>Атакующий может выложить сразу несколько карт одного достоинства, не дожидаясь ответа защитника.</li>
     <li>Защищающийся отбивает карты по одной или объявляет «беру»: после этого атакующий может подкинуть ещё карты, а затем карты со стола уходят защитнику.</li>
     <li>«Бито» доступно, когда все карты на столе отбиты; тогда атакующим становится защищавшийся.</li>
-    <li>В переводном режиме защищающийся может вместо этого перевести ход картой того же достоинства, пока карты не отбиты.</li>
+    <li>В переводном режиме можно выбрать карту того же достоинства и перевести ход, пока ни одна карта не отбита. У следующего защитника должно хватать карт на все атаки.</li>
     <li>После каждого хода игроки добирают карты до шести: атакующий первым, защищающийся последним.</li>
-    <li>Вышедший без карт игрок выбывает. Последний оставшийся — дурак.</li>
+    <li>Игрок без карт выбывает после завершения хода, если колода пуста. Последний оставшийся с картами проигрывает; если карт нет ни у кого, это ничья.</li>
+    <li>Выход активного игрока из комнаты завершает партию его поражением. Если все отключились, через пять минут партия отменяется с возвратом ставок.</li>
   </ul>
 `;
 
@@ -762,7 +783,7 @@ function updateResumeButton() {
 /* game */
 function connect() {
   if (state.source) state.source.close();
-  state.source = new EventSource(`/events?id=${encodeURIComponent(clientId)}&name=${encodeURIComponent(state.profile.name)}`);
+  state.source = new EventSource(`/events?id=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}&name=${encodeURIComponent(state.profile.name)}`);
   state.source.onopen = () => {
     state.connected = true;
     document.querySelector('#connectionStatus').textContent = 'Столы обновляются в реальном времени';
@@ -911,7 +932,7 @@ function renderGame() {
     ranksOnTable.add(row.attack.rank);
     if (row.defense) ranksOnTable.add(row.defense.rank);
   });
-  const attacking = Boolean(game.you && game.you.role === 'attacker');
+  const attacking = Boolean(game.canAttack);
   const dimmed = card => {
     if (!(game.you && game.you.turn)) return false;
     if (attacking && game.table.length) return !ranksOnTable.has(card.rank);
@@ -997,7 +1018,24 @@ function renderActions(game) {
     if (!action) return;
     element.addEventListener('click', () => {
       if (action === 'copy') return copyInvite();
+      if (action === 'transfer') return selectTransferCard();
       act(action);
+    });
+  });
+}
+
+function selectTransferCard() {
+  const game = state.game;
+  if (!game || !game.canTransfer || !game.table.length) return;
+  const rank = game.table[0].attack.rank;
+  const cards = game.hand.filter(card => card.rank === rank);
+  openModal(`<h2>Перевести ход</h2><p>Выберите карту для перевода.</p><div class="modal-actions">${cards.map(card => `<button class="secondary-btn" data-transfer-card="${esc(card.id)}">${esc(card.rank + card.suit)}</button>`).join('')}</div>`, () => {
+    document.querySelectorAll('[data-transfer-card]').forEach(button => {
+      button.addEventListener('click', () => {
+        const cardId = button.dataset.transferCard;
+        closeModal();
+        act('transfer', cardId);
+      });
     });
   });
 }
@@ -1020,8 +1058,7 @@ async function playCard(cardId, targetCardId = null) {
   if (!game || !game.you) return;
   const card = (game.hand || []).find(item => item.id === cardId);
   if (!card) return;
-  if (game.you.role === 'attacker') {
-    if (game.takePending) return toast('Соперник уже забирает карты — подкинуть не выйдет');
+  if (game.you.role !== 'defender' && !game.you.finished) {
     if (!game.canAttack) {
       const defender = game.players.find(player => player.role === 'defender');
       const openRows = game.table.filter(row => !row.defense).length;
@@ -1078,7 +1115,7 @@ function renderFinish(game) {
   overlay.innerHTML = `
     <div class="finish-card">
       <h2>Игра окончена</h2>
-      <p>${esc(game.finished.loser)} — дурак</p>
+      <p>${game.finished.cancelled ? 'Партия отменена, ставки возвращены' : game.finished.loserId ? `${esc(game.finished.loser)} проиграл` : 'Ничья'}</p>
       ${bet ? `<div class="finish-payout ${payout < 0 ? 'down' : 'up'}">${payout > 0 ? '+' : ''}${chips(payout)}<small>фишек</small></div>` : ''}
       <div class="modal-actions">
         ${game.canStart ? '<button class="primary-btn" id="finishRestart">Играть снова</button>' : ''}

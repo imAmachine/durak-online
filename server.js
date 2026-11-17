@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const PORT = Number(process.env.PORT) || 4173;
 const HOST = process.env.HOST || '0.0.0.0';
 const clients = new Map();
+const sessions = new Map();
 const rooms = new Map();
 const history = [];
 const accounts = new Map();
@@ -20,7 +21,7 @@ const MAX_TABLE_CARDS = 6;
 const MAX_PLAYERS = 6;
 const START_BALANCE = 1000;
 const BETS = [0, 50, 100, 250, 500];
-const ADMIN_KEY = process.env.ADMIN_KEY || 'durak-admin';
+const ADMIN_KEY = (process.env.ADMIN_KEY || '').trim();
 
 function buildDeck(size) {
   const ranks = size === 52 ? RANKS_52 : RANKS_36;
@@ -72,7 +73,7 @@ function renameAccount(id, name) {
 }
 
 function roomOfPlayer(id) {
-  return [...rooms.values()].find(room => room.players.some(player => player.id === id)) || null;
+  return [...rooms.values()].find(room => room.players.some(player => player.id === id && !player.left)) || null;
 }
 
 function pushAccount(id) {
@@ -87,7 +88,7 @@ function nextActive(room, player) {
   if (index === -1) return null;
   for (let step = 1; step <= room.players.length; step += 1) {
     const candidate = room.players[(index + step) % room.players.length];
-    if (!candidate.finished) return candidate;
+    if (!candidate.finished && !candidate.left) return candidate;
   }
   return null;
 }
@@ -125,6 +126,9 @@ function createRoom({ name, mode, deckSize, bet, host }) {
     trump: null,
     trumpCard: null,
     table: [],
+    discard: [],
+    trickAttackerId: null,
+    finishedAt: null,
     attackerId: null,
     defenderId: null,
     turnId: null,
@@ -143,6 +147,8 @@ function startRound(room) {
   room.trumpCard = deck[0];
   room.trump = deck[0].suit;
   room.table = [];
+  room.discard = [];
+  room.finishedAt = null;
   room.takePending = null;
   room.status = 'playing';
   room.finished = null;
@@ -150,6 +156,7 @@ function startRound(room) {
   room.lastPayouts = null;
   room.players.forEach(player => {
     player.finished = false;
+    player.left = false;
     player.hand = [];
   });
   for (let round = 0; round < 6; round += 1) {
@@ -159,9 +166,13 @@ function startRound(room) {
     });
   }
   syncTrumpCard(room);
-  const attacker = room.players[Math.floor(Math.random() * room.players.length)];
+  const held = room.players.flatMap(player => player.hand.map(card => ({ player, card })));
+  const trumps = held.filter(entry => entry.card.suit === room.trump);
+  const candidates = trumps.length ? trumps : held;
+  const attacker = candidates.reduce((lowest, entry) => VALUES.get(entry.card.rank) < VALUES.get(lowest.card.rank) ? entry : lowest).player;
   const defender = nextActive(room, attacker);
   room.attackerId = attacker.id;
+  room.trickAttackerId = attacker.id;
   room.defenderId = defender.id;
   room.turnId = attacker.id;
   room.message = `${attacker.name} атакует. ${defender.name} отбивается. Козырь ${room.trump}`;
@@ -190,7 +201,7 @@ function settleAccounts(room, loserId) {
     const account = accountOf(player.id);
     account.games += 1;
     if (player.id === loserId) account.losses += 1;
-    else account.wins += 1;
+    else if (loserId) account.wins += 1;
   });
   room.lastPayouts = {};
   if (bet && room.pot > 0) {
@@ -212,23 +223,25 @@ function settleAccounts(room, loserId) {
 }
 
 function finishGame(room, loser, message) {
+  if (room.status === 'finished') return;
+  room.finishedAt = Date.now();
   room.status = 'finished';
-  room.finished = { loser: loser ? loser.name : '—', loserId: loser ? loser.id : null };
-  room.message = message || (loser ? `${loser.name} — дурак, партия окончена` : 'Игра завершена');
+  room.finished = { loser: loser ? loser.name : '—', loserId: loser ? loser.id : null, draw: !loser };
+  room.message = message || (loser ? `${loser.name} — дурак, партия окончена` : 'Ничья. Ставки возвращены');
   history.push({ room: room.name, mode: room.mode, at: Date.now(), loser: room.finished.loser, bet: room.bet || 0 });
   settleAccounts(room, room.finished.loserId);
 }
 
 function refillHands(room) {
-  const attacker = findPlayer(room, room.attackerId);
+  const attacker = findPlayer(room, room.trickAttackerId || room.attackerId);
   const defender = findPlayer(room, room.defenderId);
   const order = [];
   let cursor = attacker;
   for (let step = 0; step < room.players.length && cursor; step += 1) {
-    if (!order.includes(cursor) && cursor !== defender) order.push(cursor);
+    if (!cursor.finished && !cursor.left && !order.includes(cursor) && cursor !== defender) order.push(cursor);
     cursor = nextActive(room, cursor);
   }
-  if (defender && !order.includes(defender)) order.push(defender);
+  if (defender && !defender.finished && !defender.left && !order.includes(defender)) order.push(defender);
   order.forEach(player => {
     while (player.hand.length < 6 && room.deck.length) player.hand.push(room.deck.pop());
   });
@@ -262,10 +275,10 @@ function settle(room) {
       if (!player.finished && player.hand.length === 0) player.finished = true;
     });
   }
-  const active = room.players.filter(player => !player.finished);
+  const active = room.players.filter(player => !player.finished && !player.left);
   if (active.length <= 1) {
     const durak = active[0] || null;
-    finishGame(room, durak, durak ? `${durak.name} — дурак, партия окончена` : 'Игра завершена');
+    finishGame(room, durak, durak ? `${durak.name} — дурак, партия окончена` : 'Ничья. Ставки возвращены');
     return;
   }
   normalizeRoles(room);
@@ -291,14 +304,15 @@ function collectTable(room, defender) {
   });
   room.table = [];
   room.takePending = null;
+  refillHands(room);
   const nextAttacker = nextActive(room, defender);
   if (!nextAttacker) return { error: 'Другой игрок уже вышел' };
   room.attackerId = nextAttacker.id;
   const nextDefender = nextActive(room, nextAttacker);
   room.defenderId = nextDefender ? nextDefender.id : null;
-  refillHands(room);
   room.message = `${defender.name} забрал карты. Ход ${nextAttacker.name}`;
   settle(room);
+  room.trickAttackerId = room.attackerId;
   updateTurn(room);
   broadcastRoom(room);
   return { ok: true };
@@ -317,8 +331,10 @@ function gameState(room, clientId) {
   const playing = room.status === 'playing';
   const isAttacking = Boolean(me && me.id === room.attackerId);
   const isDefending = Boolean(me && me.id === room.defenderId);
+  const eligible = Boolean(me && !me.finished && !me.left && me.hand.length);
+  const nextDefender = me ? nextActive(room, me) : null;
   const canAttack = Boolean(
-    me && playing && isAttacking && defender && defender.hand.length > unbeatenRows &&
+    eligible && playing && !isDefending && (isAttacking || room.table.length > 0) && defender && defender.hand.length > unbeatenRows &&
     room.table.length < MAX_TABLE_CARDS &&
     (room.table.length === 0 || me.hand.some(card => allRanks.has(card.rank)))
   );
@@ -326,12 +342,13 @@ function gameState(room, clientId) {
   const canTake = Boolean(me && playing && isDefending && room.table.length > 0 && !room.takePending && hasUnbeaten);
   const canPass = Boolean(me && playing && isAttacking && room.table.length > 0 && (room.takePending || !hasUnbeaten));
   const canTransfer = Boolean(
-    me && playing && room.mode === 'transfer' && isDefending && !room.takePending &&
-    room.table.length > 0 && allUnbeaten && attackRanks.size === 1 &&
+    eligible && playing && room.mode === 'transfer' && isDefending && !room.takePending &&
+    room.table.length > 0 && room.table.length < MAX_TABLE_CARDS && allUnbeaten && attackRanks.size === 1 &&
+    nextDefender && nextDefender !== me && nextDefender.hand.length >= room.table.length + 1 &&
     me.hand.some(card => card.rank === [...attackRanks][0])
   );
   const canPlay = canAttack || canDefend;
-  const connected = room.players.filter(player => player.connected).length;
+  const connected = room.players.filter(player => player.connected && !player.left).length;
   return {
     room: {
       id: room.id,
@@ -349,12 +366,15 @@ function gameState(room, clientId) {
       cards: player.hand.length,
       connected: player.connected,
       finished: player.finished,
+      left: Boolean(player.left),
       role: player.id === room.attackerId ? 'attacker' : player.id === room.defenderId ? 'defender' : 'idle',
     })),
     you: me
       ? {
           id: me.id,
           name: me.name,
+          finished: me.finished,
+          left: Boolean(me.left),
           role: isAttacking ? 'attacker' : isDefending ? 'defender' : 'idle',
           turn: canPlay,
           canPlay,
@@ -379,7 +399,7 @@ function gameState(room, clientId) {
     canPass,
     canTake,
     takePending: Boolean(room.takePending),
-    canStart: Boolean(me && room.hostId === me.id && room.status !== 'playing' && connected >= 2),
+    canStart: Boolean(me && !me.left && room.hostId === me.id && room.status !== 'playing' && connected >= 2),
     payout: room.lastPayouts && me ? room.lastPayouts[me.id] || 0 : 0,
     finished: room.finished,
   };
@@ -422,7 +442,7 @@ function broadcastLobby() {
 function broadcastRoom(room) {
   room.players.forEach(player => {
     const client = clients.get(player.id);
-    if (!client) return;
+    if (!client || client.roomId !== room.id || player.left) return;
     send(client, { type: 'game', state: gameState(room, player.id) });
   });
   broadcastLobby();
@@ -440,7 +460,18 @@ function leaveRoom(client) {
     broadcastLobby();
     return;
   }
-  const wasPlaying = room.status === 'playing';
+  if (room.status === 'playing') {
+    player.connected = false;
+    player.left = true;
+    player.offlineAt = Date.now();
+    if (room.hostId === player.id) {
+      const host = room.players.find(item => !item.left && item.connected);
+      if (host) room.hostId = host.id;
+    }
+    if (!player.finished) finishGame(room, player, `${player.name} покинул партию, игра окончена`);
+    broadcastRoom(room);
+    return;
+  }
   room.players = room.players.filter(item => item.id !== client.id);
   if (!room.players.length) {
     rooms.delete(room.id);
@@ -448,23 +479,6 @@ function leaveRoom(client) {
     return;
   }
   if (room.hostId === client.id) room.hostId = room.players[0].id;
-  if (wasPlaying) {
-    room.table = [];
-    room.takePending = null;
-    const account = accountOf(client.id);
-    account.games += 1;
-    account.losses += 1;
-    if (room.players.length < 2) {
-      const survivor = room.players[0];
-      finishGame(room, player, `${player.name} покинул партию. ${survivor.name} остался один, игра окончена`);
-    } else {
-      normalizeRoles(room);
-      room.message = `${player.name} покинул игру`;
-    }
-    pushAccount(client.id);
-    broadcastRoom(room);
-    return;
-  }
   room.message = `${player.name} покинул лобби`;
   broadcastRoom(room);
 }
@@ -473,13 +487,13 @@ function act(client, data) {
   const room = rooms.get(client.roomId);
   if (!room) return { error: 'Вы не находитесь в лобби' };
   const me = findPlayer(room, client.id);
-  if (!me) return { error: 'Вы не участник этой игры' };
+  if (!me || me.left) return { error: 'Вы не участник этой игры' };
   const action = data.action;
 
   if (action === 'start') {
     if (room.status === 'playing') return { error: 'Партия уже идёт' };
     if (room.hostId !== me.id) return { error: 'Игру начинает создатель лобби' };
-    const ready = room.players.filter(player => player.connected);
+    const ready = room.players.filter(player => player.connected && !player.left);
     if (ready.length < 2) return { error: 'Нужно минимум два игрока' };
     const shortfall = stakeShortfall(room, ready);
     if (shortfall) return { error: shortfall };
@@ -501,10 +515,13 @@ function act(client, data) {
   const isAttacker = me.id === room.attackerId;
   const isDefender = me.id === room.defenderId;
 
+  if (me.finished) return { error: 'Вы уже закончили игру' };
+
   if (action === 'attack') {
-    if (!isAttacker) return { error: 'Атаковать может только ходящий игрок' };
+    if (isDefender || (!isAttacker && !room.table.length)) return { error: 'Открыть ход может только атакующий, подкидывать — все кроме защищающегося' };
     const card = me.hand.find(item => item.id === data.cardId);
     if (!card) return { error: 'Такой карты нет в руке' };
+    if (!defender || defender.hand.length <= room.table.filter(row => !row.defense).length) return { error: 'У защищающегося недостаточно карт' };
     if (room.table.length >= MAX_TABLE_CARDS) return { error: 'Больше шести карт за ход не подкидывают' };
     if (room.table.length && !tableRanks(room).has(card.rank)) {
       return { error: 'Подкидывать можно только карты достоинства, которое уже есть на столе' };
@@ -546,10 +563,11 @@ function act(client, data) {
       return { error: 'Переводить можно, пока карты на столе не отбиты' };
     }
     const rank = [...ranks][0];
-    const card = me.hand.find(item => item.rank === rank);
+    const card = me.hand.find(item => item.id === data.cardId && item.rank === rank);
     if (!card) return { error: `Нужна карта достоинства ${rank}` };
     const nextDefender = nextActive(room, me);
-    if (!nextDefender) return { error: 'Переводить больше некому' };
+    if (!nextDefender || nextDefender === me) return { error: 'Переводить больше некому' };
+    if (room.table.length >= MAX_TABLE_CARDS || nextDefender.hand.length < room.table.length + 1) return { error: 'У следующего игрока недостаточно карт для перевода' };
     me.hand = me.hand.filter(item => item.id !== card.id);
     room.table.push({ attack: card, defense: null });
     room.attackerId = me.id;
@@ -581,14 +599,16 @@ function act(client, data) {
     if (!room.table.length) return { error: 'Стол пуст' };
     if (room.takePending) return collectTable(room, defender);
     if (room.table.some(row => !row.defense)) return { error: 'Сначала отбейте все карты' };
+    room.discard.push(...room.table.flatMap(row => [row.attack, row.defense]));
     room.table = [];
+    refillHands(room);
     const newAttacker = defender;
     const newDefender = nextActive(room, newAttacker);
     room.attackerId = newAttacker.id;
     room.defenderId = newDefender ? newDefender.id : null;
-    refillHands(room);
     room.message = `Бито. ${newAttacker.name} атакует${newDefender ? `, ${newDefender.name} отбивается` : ''}`;
     settle(room);
+    room.trickAttackerId = room.attackerId;
     updateTurn(room);
     broadcastRoom(room);
     return { ok: true };
@@ -627,18 +647,24 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/events') {
     const id = url.searchParams.get('id');
     const name = (url.searchParams.get('name') || 'Игрок').slice(0, 20);
-    if (!id) {
+    const token = url.searchParams.get('token');
+    if (!id || !/^[a-f0-9]{64}$/.test(token || '')) {
       res.writeHead(400);
       res.end();
       return;
     }
-    if (clients.has(id)) {
-      try {
-        clients.get(id).res.end();
-      } catch (error) {}
+    if (sessions.has(id) && sessions.get(id) !== token) {
+      return json(res, 403, { error: 'Неверный токен сессии' });
     }
+    const previous = clients.get(id);
+    sessions.set(id, token);
     const client = { id, name, res, roomId: null };
     clients.set(id, client);
+    if (previous) {
+      try {
+        previous.res.end();
+      } catch (error) {}
+    }
     renameAccount(id, name);
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -657,7 +683,7 @@ const server = http.createServer(async (req, res) => {
         player.name = name;
         player.offlineAt = null;
       }
-      send(client, { type: 'game', state: gameState(room, id) });
+      broadcastRoom(room);
     } else {
       send(client, { type: 'noroom' });
     }
@@ -679,8 +705,21 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  let requestBody;
+  if (req.method === 'POST') {
+    requestBody = await readBody(req);
+    if (!requestBody || typeof requestBody !== 'object' || Array.isArray(requestBody)) {
+      return json(res, 400, { error: 'Некорректный запрос' });
+    }
+    if (Object.hasOwn(requestBody, 'clientId') || ['/api/rooms', '/api/join', '/api/action', '/api/profile', '/api/leave'].includes(url.pathname)) {
+      if (!sessions.has(requestBody.clientId) || sessions.get(requestBody.clientId) !== requestBody.token) {
+        return json(res, 403, { error: 'Неверный токен сессии' });
+      }
+    }
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/rooms') {
-    const body = await readBody(req);
+    const body = requestBody;
     const client = clients.get(body.clientId);
     if (!client) return json(res, 400, { error: 'Нет соединения с сервером, обновите страницу' });
     if (client.roomId && rooms.has(client.roomId)) return json(res, 400, { error: 'Вы уже в лобби' });
@@ -698,32 +737,34 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/join') {
-    const body = await readBody(req);
+    const body = requestBody;
     const client = clients.get(body.clientId);
     if (!client) return json(res, 400, { error: 'Нет соединения с сервером, обновите страницу' });
     const room = rooms.get(String(body.roomId || '').toUpperCase());
     if (!room) return json(res, 404, { error: 'Лобби с таким кодом не найдено' });
+    const existing = findPlayer(room, client.id);
+    if (existing && existing.left && room.status === 'playing') return json(res, 400, { error: 'Вы уже покинули эту партию' });
+    if (!existing && room.status === 'playing') return json(res, 400, { error: 'Игра уже началась' });
+    const now = Date.now();
+    const available = room.players.filter(player => player.connected || now - (player.offlineAt ?? now) < 60 * 1000);
+    if (!existing && available.length >= MAX_PLAYERS) return json(res, 400, { error: 'В лобби нет свободных мест' });
+    if (!existing && room.bet && accountOf(client.id).balance < room.bet) {
+      return json(res, 400, { error: `Недостаточно фишек: ставка за столом ${room.bet}` });
+    }
     if (client.roomId && client.roomId !== room.id && rooms.has(client.roomId)) leaveRoom(client);
     if (body.playerName) client.name = String(body.playerName).slice(0, 20);
     renameAccount(client.id, client.name);
-    const existing = findPlayer(room, client.id);
     if (existing) {
       existing.connected = true;
+      existing.left = false;
       existing.offlineAt = null;
       existing.name = client.name;
       client.roomId = room.id;
       broadcastRoom(room);
       return json(res, 200, { room: roomSummary(room), account: publicAccount(accountOf(client.id)) });
     }
-    if (room.status === 'playing') return json(res, 400, { error: 'Игра уже началась' });
-    if (room.players.length >= MAX_PLAYERS) {
-      const now = Date.now();
-      room.players = room.players.filter(player => clients.has(player.id) || now - (player.offlineAt || now) < 60 * 1000);
-      if (room.players.length >= MAX_PLAYERS) return json(res, 400, { error: 'В лобби нет свободных мест' });
-    }
-    if (room.bet && accountOf(client.id).balance < room.bet) {
-      return json(res, 400, { error: `Недостаточно фишек: ставка за столом ${room.bet}` });
-    }
+    room.players = available;
+    if (!findPlayer(room, room.hostId)) room.hostId = room.players[0]?.id || client.id;
     room.players.push({ id: client.id, name: client.name, hand: [], connected: true, finished: false });
     client.roomId = room.id;
     room.message = 'Игроки готовы. Создатель лобби может начать игру';
@@ -732,7 +773,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/action') {
-    const body = await readBody(req);
+    const body = requestBody;
     const client = clients.get(body.clientId);
     if (!client) return json(res, 400, { error: 'Нет соединения с сервером, обновите страницу' });
     const result = act(client, body);
@@ -740,7 +781,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/profile') {
-    const body = await readBody(req);
+    const body = requestBody;
     const client = clients.get(body.clientId);
     if (!client) return json(res, 400, { error: 'Нет соединения с сервером' });
     const name = String(body.name || '').trim().slice(0, 20);
@@ -758,7 +799,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/admin') {
-    const body = await readBody(req);
+    const body = requestBody;
+    if (!ADMIN_KEY) return json(res, 503, { error: 'Панель администратора отключена' });
     if (String(body.key || '') !== ADMIN_KEY) return json(res, 403, { error: 'Неверный ключ администратора' });
     const op = String(body.op || 'list');
 
@@ -826,7 +868,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/leave') {
-    const body = await readBody(req);
+    const body = requestBody;
     const client = clients.get(body.clientId);
     if (!client) return json(res, 200, { ok: true });
     leaveRoom(client);
@@ -843,6 +885,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   const file = url.pathname === '/' ? '/index.html' : url.pathname;
+  if (!['/index.html', '/app.js', '/style.css'].includes(file)) return json(res, 404, { error: 'Not found' });
   const filePath = path.join(__dirname, path.normalize(file).replace(/^(\.\.[/\\])+/, ''));
   if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
     res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream' });
@@ -852,20 +895,47 @@ const server = http.createServer(async (req, res) => {
   json(res, 404, { error: 'Not found' });
 });
 
+function cancelGame(room) {
+  if (room.status !== 'playing') return;
+  const stake = room.bet || 0;
+  room.lastPayouts = {};
+  if (room.pot > 0) {
+    room.players.forEach(player => {
+      accountOf(player.id).balance += stake;
+      room.lastPayouts[player.id] = 0;
+      pushAccount(player.id);
+    });
+  }
+  room.pot = 0;
+  room.status = 'finished';
+  room.finishedAt = Date.now();
+  room.finished = { loser: '—', loserId: null, cancelled: true };
+  room.message = 'Партия отменена: игроки отключены. Ставки возвращены';
+  broadcastRoom(room);
+}
+
 setInterval(() => {
   const now = Date.now();
   let changed = false;
   rooms.forEach((room, id) => {
-    const hasConnected = room.players.some(player => clients.has(player.id));
-    const stale = room.status === 'finished' && now - room.createdAt > 30 * 60 * 1000;
-    if (stale) {
-      rooms.delete(id);
-      changed = true;
+    const participants = room.players.filter(player => !player.left);
+    const hasConnected = participants.some(player => player.connected && clients.has(player.id));
+    const offlineAt = participants.length ? Math.max(...participants.map(player => player.offlineAt ?? now)) : room.finishedAt ?? room.createdAt;
+    const expired = !hasConnected && now - offlineAt >= 5 * 60 * 1000;
+    if (room.status === 'playing') {
+      if (expired) cancelGame(room);
       return;
     }
-    if (hasConnected) return;
-    if (room.status !== 'playing' || now - room.createdAt > 60 * 1000) {
+    const stale = room.status === 'finished' && now - room.finishedAt >= 30 * 60 * 1000;
+    if (stale || (room.status === 'waiting' && expired)) {
       rooms.delete(id);
+      room.players.forEach(player => {
+        const client = clients.get(player.id);
+        if (client && client.roomId === id) {
+          client.roomId = null;
+          send(client, { type: 'noroom' });
+        }
+      });
       changed = true;
     }
   });

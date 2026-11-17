@@ -4,6 +4,6 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "test": "node tests/moves.mjs && node tests/rules-fixes.mjs && node tests/money.mjs && node tests/full-game.mjs"
+    "test": "node tests/engine.mjs && node tests/client.mjs && node tests/security.mjs && node tests/moves.mjs && node tests/rules-fixes.mjs && node tests/money.mjs && node tests/full-game.mjs"
   }
 }

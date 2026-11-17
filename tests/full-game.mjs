@@ -1,6 +1,12 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 
-const base = 'http://localhost:4173';
+const base = process.env.BASE_URL || 'http://localhost:4173';
+const tokens = new Map();
+function tokenFor(id) {
+  if (!tokens.has(id)) tokens.set(id, crypto.randomBytes(32).toString('hex'));
+  return tokens.get(id);
+}
 const players = {};
 let failures = 0;
 let steps = 0;
@@ -33,7 +39,7 @@ function sse(url, onMessage, onError) {
 function connect(id, name) {
   return new Promise(resolve => {
     players[id] = { state: null, version: 0, source: null };
-    players[id].source = sse(`${base}/events?id=${id}&name=${encodeURIComponent(name)}`, payload => {
+    players[id].source = sse(`${base}/events?id=${encodeURIComponent(id)}&token=${tokenFor(id)}&name=${encodeURIComponent(name)}`, payload => {
       if (payload.type === 'game') { players[id].state = payload.state; players[id].version += 1; }
     }, () => {});
     setTimeout(resolve, 350);
@@ -41,7 +47,8 @@ function connect(id, name) {
 }
 
 async function post(path, body) {
-  const response = await fetch(base + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const requestBody = body.clientId ? { ...body, token: body.token || tokenFor(body.clientId) } : body;
+  const response = await fetch(base + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) });
   return { status: response.status, data: await response.json().catch(() => ({})) };
 }
 
@@ -103,9 +110,12 @@ while (players[a].state.room.status === 'playing' && steps < 400) {
       const card = [...hand].sort((x, y) => value(x.rank) - value(y.rank))[0];
       action = { action: 'attack', cardId: card.id };
     } else if (myState.canPass) {
-      const ranks = new Set(state.table.map(row => row.attack.rank));
+      const ranks = new Set(state.table.flatMap(row => [row.attack.rank, ...(row.defense ? [row.defense.rank] : [])]));
       const extra = hand.find(card => ranks.has(card.rank));
-      action = extra && state.table.length < 6 ? { action: 'attack', cardId: extra.id } : { action: 'pass' };
+      const unbeaten = state.table.filter(row => !row.defense).length;
+      const defenderCards = state.players.find(player => player.id === state.defenderId).cards;
+      action = extra && myState.canAttack && state.table.length < 6 && unbeaten < defenderCards
+        ? { action: 'attack', cardId: extra.id } : { action: 'pass' };
     } else {
       break;
     }
