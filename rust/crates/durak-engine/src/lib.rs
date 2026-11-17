@@ -58,7 +58,7 @@ pub struct DurakState { pub mode: Mode, pub deck_size: DeckSize, pub status: Sta
 
 impl DurakState {
     pub fn new(ids: Vec<String>, mode: Mode, deck_size: DeckSize) -> Self { Self { mode, deck_size, status: Status::Waiting, players: ids.into_iter().map(|id| Player { id, hand: Vec::new(), finished: false, left: false }).collect(), deck: Vec::new(), trump: None, trump_card: None, table: Vec::new(), discard: Vec::new(), attacker_id: None, defender_id: None, turn_id: None, trick_attacker_id: None, take_pending: false, finished: None } }
-    pub fn start<R: RandomSource>(&mut self, rng: &mut R) -> Result<Transition, RuleError> { if self.status == Status::Playing { return Err(RuleError::AlreadyPlaying); } if self.players.len() < MIN_PLAYERS { return Err(RuleError::NeedTwoPlayers); } if self.players.len() > MAX_PLAYERS { return Err(RuleError::TooManyPlayers); } let mut deck = build_deck(self.deck_size); for i in (1..deck.len()).rev() { let j = rng.next_usize(i + 1); deck.swap(i, j); } self.deck = deck; self.trump_card = self.deck.first().copied(); self.trump = self.trump_card.map(|c| c.suit); self.table.clear(); self.discard.clear(); self.finished = None; self.take_pending = false; for p in &mut self.players { p.hand.clear(); p.finished = false; p.left = false; } for _ in 0..HAND_LIMIT { for p in &mut self.players { if let Some(card) = self.deck.pop() { p.hand.push(card); } } } if self.deck.is_empty() {
+    pub fn start<R: RandomSource>(&mut self, rng: &mut R) -> Result<Transition, RuleError> { if self.status == Status::Playing { return Err(RuleError::AlreadyPlaying); } if self.players.len() < MIN_PLAYERS { return Err(RuleError::NeedTwoPlayers); } if self.players.len() > MAX_PLAYERS { return Err(RuleError::TooManyPlayers); } if self.players.iter().any(|p| p.id.is_empty()) { return Err(RuleError::EmptyPlayerId); } let mut ids = BTreeSet::new(); if self.players.iter().any(|p| !ids.insert(p.id.as_str())) { return Err(RuleError::DuplicatePlayerId); } let mut deck = build_deck(self.deck_size); for i in (1..deck.len()).rev() { let j = rng.next_usize(i + 1); deck.swap(i, j); } self.deck = deck; self.trump_card = self.deck.first().copied(); self.trump = self.trump_card.map(|c| c.suit); self.table.clear(); self.discard.clear(); self.finished = None; self.take_pending = false; for p in &mut self.players { p.hand.clear(); p.finished = false; p.left = false; } for _ in 0..HAND_LIMIT { for p in &mut self.players { if let Some(card) = self.deck.pop() { p.hand.push(card); } } } if self.deck.is_empty() {
             self.trump_card = None;
         }
         let trump = self.trump.ok_or(RuleError::NoTrump)?; let candidates: Vec<(usize, Card)> = self.players.iter().enumerate().flat_map(|(i, p)| p.hand.iter().copied().map(move |c| (i, c))).collect(); let trumps: Vec<_> = candidates.iter().copied().filter(|(_, c)| c.suit == trump).collect(); let pool = if trumps.is_empty() { candidates } else { trumps }; let (attacker, _) = pool.into_iter().min_by_key(|(_, c)| c.rank.value()).unwrap(); self.status = Status::Playing; self.attacker_id = Some(self.players[attacker].id.clone()); self.trick_attacker_id = self.attacker_id.clone(); self.defender_id = self.next_active_id(attacker); self.turn_id = self.attacker_id.clone(); Ok(self.transition("start")) }
@@ -121,7 +121,7 @@ pub struct SettlementIntent { pub loser_id: Option<String> }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Transition { pub state: DurakState, pub event: Event, pub settlement: Option<SettlementIntent> }
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RuleError { AlreadyPlaying, NeedTwoPlayers, TooManyPlayers, NotPlaying, UnknownPlayer, InactivePlayer, WrongTurn, CardNotInHand, TableFull, RankMismatch, NoUnbeatenRow, CannotBeat, NoTrump, AlreadyTaking, TransferDisabled, TransferUnavailable, NoNextDefender, InsufficientCapacity, TakeUnavailable, UnbeatenCards }
+pub enum RuleError { AlreadyPlaying, NeedTwoPlayers, TooManyPlayers, EmptyPlayerId, DuplicatePlayerId, NotPlaying, UnknownPlayer, InactivePlayer, WrongTurn, CardNotInHand, TableFull, RankMismatch, NoUnbeatenRow, CannotBeat, NoTrump, AlreadyTaking, TransferDisabled, TransferUnavailable, NoNextDefender, InsufficientCapacity, TakeUnavailable, UnbeatenCards }
 
 #[cfg(test)]
 mod tests {
@@ -148,6 +148,18 @@ mod tests {
         for count in [2, 6] {
             let mut game = DurakState::new((0..count).map(|i| format!("p{i}")).collect(), Mode::Classic, DeckSize::ThirtySix);
             assert!(game.start(&mut Lcg(1)).is_ok());
+        }
+    }
+    #[test]
+    fn start_rejects_empty_and_duplicate_player_ids_atomically() {
+        for (ids, expected) in [(vec!["a", ""], RuleError::EmptyPlayerId), (vec!["a", "a"], RuleError::DuplicatePlayerId), (vec!["", ""], RuleError::EmptyPlayerId), (vec!["a", "b", "a"], RuleError::DuplicatePlayerId)] {
+            let mut game = DurakState::new(ids.into_iter().map(String::from).collect(), Mode::Classic, DeckSize::ThirtySix);
+            let before = game.clone();
+            let result = game.start(&mut Lcg(1));
+            assert_eq!(result, Err(expected));
+            assert_eq!(game, before);
+            assert_eq!(game.status, Status::Waiting);
+            assert!(game.deck.is_empty());
         }
     }
     #[test]
