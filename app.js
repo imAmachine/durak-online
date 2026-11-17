@@ -672,23 +672,40 @@ function renderGame() {
   }
   renderActions(game);
   fitHand();
+  fitTable();
   renderFinish(game);
+}
+
+function fitTable() {
+  const row = document.querySelector('#tableCards');
+  if (!row) return;
+  row.style.removeProperty('zoom');
+  if (!row.querySelector('.pair') || !row.clientWidth) return;
+  const content = row.scrollWidth;
+  if (!content) return;
+  const scale = row.clientWidth / content;
+  if (scale < .999) row.style.zoom = Math.max(.7, scale).toFixed(3);
 }
 
 function fitHand() {
   const hand = document.querySelector('#myHand');
   if (!hand) return;
+  hand.style.removeProperty('zoom');
   const cards = hand.querySelectorAll('.hand-card');
   const cardWidth = cards.length ? cards[0].offsetWidth : 0;
   if (cards.length < 2 || !cardWidth || !hand.clientWidth) {
     hand.style.removeProperty('--overlap');
     return;
   }
-  const padding = (parseFloat(getComputedStyle(hand).paddingLeft) || 0) + (parseFloat(getComputedStyle(hand).paddingRight) || 0);
-  const available = hand.clientWidth - padding;
+  const styles = getComputedStyle(hand);
+  const padding = (parseFloat(styles.paddingLeft) || 0) + (parseFloat(styles.paddingRight) || 0);
+  const available = Math.max(0, hand.clientWidth - padding);
+  const minStep = Math.max(15, Math.min(34, cardWidth * .3));
   const needed = (cards.length * cardWidth - available) / (cards.length - 1);
-  const overlap = Math.max(0, Math.min(cardWidth - 26, Math.ceil(Math.max(needed, cardWidth * .1))));
+  const overlap = Math.max(0, Math.min(cardWidth - minStep, Math.ceil(Math.max(needed, cardWidth * .12))));
   hand.style.setProperty('--overlap', `${overlap}px`);
+  const total = cardWidth + (cards.length - 1) * (cardWidth - overlap);
+  if (total > available + 1) hand.style.zoom = Math.max(.6, available / total).toFixed(3);
 }
 
 function renderActions(game) {

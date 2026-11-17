@@ -1628,6 +1628,15 @@ a { color: var(--brass); text-underline-offset: 3px; }
   .hero-copy { max-width: 58%; }
 }
 
+@media (max-width: 1180px) and (min-width: 961px) {
+  .seat { min-width: 104px; padding: 9px 10px 10px; }
+  .seat .mini-avatar { width: 32px; height: 32px; font-size: 10px; }
+  .seat strong { max-width: 92px; font-size: 10.5px; }
+  .seat-cards small { font-size: 9px; }
+  .pos-2 { top: 46%; }
+  .pos-3 { top: 46%; }
+}
+
 @media (max-width: 960px) {
   .sidebar { flex-basis: 236px; width: 236px; padding-inline: 18px; }
   .hero-banner { align-items: flex-start; min-height: 0; padding: 40px 42px 270px; }
