@@ -139,8 +139,9 @@ while (players[a].state.room.status === 'playing' && steps < 400) {
 
 const final = players[a].state;
 check('игра завершилась', final.room.status === 'finished', final.room.status);
-check('определён дурак', Boolean(final.finished && final.finished.loser), JSON.stringify(final.finished));
-check('карты на руках у оставшихся', final.players.some(player => player.cards > 0));
+const draw = Boolean(final.finished && final.finished.draw);
+check('результат партии определён', draw ? final.finished.loserId === null : Boolean(final.finished && final.finished.loserId), JSON.stringify(final.finished));
+check('карты на руках у оставшихся', draw ? final.players.every(player => player.cards === 0) : final.players.some(player => player.cards > 0));
 check('всего карт учтено', totalCards(final) + discarded === 36, `${totalCards(final)} + ${discarded}`);
 console.log(`шагов сыграно: ${steps}, дурак: ${final.finished ? final.finished.loser : '—'}`);
 

@@ -258,6 +258,79 @@ mod tests {
     use tempfile::tempdir;
     use tower::ServiceExt;
 
+    struct TestStream { stream: axum::body::BodyDataStream, buffer: String }
+
+    async fn open_events(app: &Router, id: &str) -> TestStream {
+        let token = "a".repeat(64);
+        let response = app.clone().oneshot(Request::get(format!("/events?id={id}&token={token}&name={id}"))
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        TestStream { stream: response.into_body().into_data_stream(), buffer: String::new() }
+    }
+
+    async fn lobby(stream: &mut TestStream, predicate: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+        use tokio_stream::StreamExt;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                while let Some(end) = stream.buffer.find("\n\n") {
+                    let frame = stream.buffer[..end].to_owned();
+                    stream.buffer.drain(..end + 2);
+                    if let Some(data) = frame.lines().find_map(|line| line.strip_prefix("data: ")) {
+                        let value: serde_json::Value = serde_json::from_str(data).unwrap();
+                        if value["type"] == "lobby" && predicate(&value) { return value; }
+                    }
+                }
+                let bytes = stream.stream.next().await.unwrap().unwrap();
+                stream.buffer.push_str(std::str::from_utf8(&bytes).unwrap());
+            }
+        }).await.expect("lobby update timed out")
+    }
+
+    async fn post(app: &Router, path: &str, value: serde_json::Value) -> serde_json::Value {
+        let response = app.clone().oneshot(Request::post(path).header("content-type", "application/json")
+            .body(Body::from(value.to_string())).unwrap()).await.unwrap();
+        assert!(response.status().is_success(), "{}", response.status());
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn lobby_stream_tracks_room_lifecycle_and_connections() {
+        let app = router();
+        let mut observer = open_events(&app, "observer").await;
+        let mut host = open_events(&app, "host").await;
+        let guest = open_events(&app, "guest").await;
+        let token = "a".repeat(64);
+        let created = post(&app, "/api/rooms", json!({"clientId":"host","token":token,"name":"Test"})).await;
+        let code = created["code"].as_str().unwrap();
+        let room = |v: &serde_json::Value| v["rooms"].as_array().unwrap().iter().find(|r| r["id"] == code).cloned();
+        lobby(&mut observer, |v| room(v).is_some_and(|r| r["players"].as_array().unwrap().len() == 1)).await;
+        post(&app, "/api/join", json!({"clientId":"guest","token":token,"roomId":code})).await;
+        lobby(&mut observer, |v| room(v).is_some_and(|r| r["players"].as_array().unwrap().len() == 2)).await;
+        drop(guest);
+        lobby(&mut observer, |v| v["online"] == 2 && room(v).is_some_and(|r| r["players"].as_array().unwrap().len() == 1)).await;
+        let _guest = open_events(&app, "guest").await;
+        lobby(&mut observer, |v| room(v).is_some_and(|r| r["players"].as_array().unwrap().len() == 2)).await;
+        post(&app, "/api/action", json!({"clientId":"host","token":token,"action":"start"})).await;
+        lobby(&mut observer, |v| room(v).is_some_and(|r| r["status"] == "playing" && r["players"][0]["cards"] == 6)).await;
+        post(&app, "/api/leave", json!({"clientId":"host","token":token})).await;
+        lobby(&mut observer, |v| room(v).is_none()).await;
+        lobby(&mut host, |v| room(v).is_none()).await;
+    }
+
+    #[tokio::test]
+    async fn lobby_removes_empty_room_after_leave() {
+        let app = router();
+        let mut observer = open_events(&app, "observer").await;
+        let _host = open_events(&app, "host").await;
+        let token = "a".repeat(64);
+        let created = post(&app, "/api/rooms", json!({"clientId":"host","token":token})).await;
+        let code = created["code"].as_str().unwrap();
+        lobby(&mut observer, |v| v["rooms"].as_array().unwrap().iter().any(|r| r["id"] == code)).await;
+        post(&app, "/api/leave", json!({"clientId":"host","token":token})).await;
+        lobby(&mut observer, |v| v["rooms"].as_array().unwrap().is_empty()).await;
+    }
+
     #[tokio::test]
     async fn readiness_requires_a_migrated_repository() {
         let directory = tempdir().unwrap();

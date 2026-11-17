@@ -2,7 +2,7 @@ use super::{error, is_client_id, is_token, AppState};
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use durak_engine::{Action, Card, Command, DeckSize, DurakState, Mode, Rank, Suit};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 struct SecureRandom;
 impl durak_engine::RandomSource for SecureRandom {
@@ -110,8 +110,8 @@ fn card(v: &Value) -> Option<Card> {
 fn card_json(c: Card) -> Value {
     json!({"id":format!("{}{}",match c.rank {Rank::Two=>"2",Rank::Three=>"3",Rank::Four=>"4",Rank::Five=>"5",Rank::Six=>"6",Rank::Seven=>"7",Rank::Eight=>"8",Rank::Nine=>"9",Rank::Ten=>"10",Rank::Jack=>"В",Rank::Queen=>"Д",Rank::King=>"К",Rank::Ace=>"Т"},match c.suit {Suit::Spades=>"♠",Suit::Hearts=>"♥",Suit::Diamonds=>"♦",Suit::Clubs=>"♣"}),"rank":match c.rank {Rank::Two=>"2",Rank::Three=>"3",Rank::Four=>"4",Rank::Five=>"5",Rank::Six=>"6",Rank::Seven=>"7",Rank::Eight=>"8",Rank::Nine=>"9",Rank::Ten=>"10",Rank::Jack=>"В",Rank::Queen=>"Д",Rank::King=>"К",Rank::Ace=>"Т"},"suit":match c.suit {Suit::Spades=>"♠",Suit::Hearts=>"♥",Suit::Diamonds=>"♦",Suit::Clubs=>"♣"}})
 }
-fn room_summary(r: &Room, accounts: &std::collections::HashMap<String, Account>) -> Value {
-    json!({"id":r.id,"name":r.name,"mode":if r.mode==Mode::Transfer{"transfer"}else{"classic"},"deckSize":r.deck_size.card_count(),"bet":r.bet,"status":status(r.state.status),"host":accounts.get(&r.host).map(|a|a.name.clone()).unwrap_or_default(),"players":r.state.players.iter().map(|p|json!({"id":p.id,"name":accounts.get(&p.id).map(|a|a.name.clone()).unwrap_or_else(||p.id.clone()),"cards":p.hand.len(),"connected":true})).collect::<Vec<_>>(),"seats":6})
+fn room_summary(r: &Room, accounts: &HashMap<String, Account>, connected: &HashSet<String>) -> Value {
+    json!({"id":r.id,"name":r.name,"mode":if r.mode==Mode::Transfer{"transfer"}else{"classic"},"deckSize":r.deck_size.card_count(),"bet":r.bet,"status":status(r.state.status),"host":accounts.get(&r.host).map(|a|a.name.clone()).unwrap_or_default(),"players":r.state.players.iter().filter(|p| !p.left && connected.contains(&p.id)).map(|p|json!({"id":p.id,"name":accounts.get(&p.id).map(|a|a.name.clone()).unwrap_or_else(||p.id.clone()),"cards":p.hand.len(),"connected":true})).collect::<Vec<_>>(),"seats":6})
 }
 fn status(s: durak_engine::Status) -> &'static str {
     match s {
@@ -226,10 +226,20 @@ fn snapshot(
         "message":r.message,"canAttack":can_attack,"canDefend":can_defend,"canTransfer":can_transfer,"canPass":can_pass,"canTake":can_take,"takePending":game.take_pending,"canStart":can_start,"payout":r.payouts.get(id).copied().unwrap_or(0),"finished":finished,"seq":r.seq,"log":r.events.iter().rev().take(8).rev().collect::<Vec<_>>()
     })
 }
+async fn broadcast_lobby(state: &AppState, rooms: &HashMap<String, Room>) {
+    let accounts = state.accounts.read().await;
+    let clients = state.clients.read().await;
+    let connected: HashSet<String> = clients.keys().cloned().collect();
+    let lobby = json!({"type":"lobby","online":clients.len(),"rooms":rooms.values().filter(|r| r.state.status != durak_engine::Status::Finished && r.state.players.iter().any(|p| !p.left && connected.contains(&p.id))).map(|r| room_summary(r, &accounts, &connected)).collect::<Vec<_>>(),"history":[]});
+    for client in clients.values() {
+        let _ = client.sender.try_send(Ok(axum::response::sse::Event::default().data(lobby.to_string())));
+    }
+}
 async fn push_account(state: &AppState, id: &str) {
+    let accounts = state.accounts.read().await;
     let clients = state.clients.read().await;
     if let Some(c) = clients.get(id) {
-        if let Some(a) = state.accounts.read().await.get(id) {
+        if let Some(a) = accounts.get(id) {
             let _ = c.sender.try_send(Ok(axum::response::sse::Event::default()
                 .data(json!({"type":"account","account":a.public(true)}).to_string())));
         }
@@ -394,10 +404,12 @@ pub async fn create(
         payouts: HashMap::new(),
         message: "Ожидаем игроков. Отправьте друзьям код приглашения".into(),
     };
-    let summary = room_summary(&r, &accounts);
+    let connected = state.clients.read().await.keys().cloned().collect();
+    let summary = room_summary(&r, &accounts, &connected);
     drop(accounts);
     broadcast(&state, &mut r, &id, "create", &body).await;
     rooms.insert(rid.clone(), r);
+    broadcast_lobby(&state, &rooms).await;
     (
         StatusCode::CREATED,
         Json(json!({"room":summary,"code":rid,"account":account})),
@@ -468,9 +480,11 @@ pub async fn join(
     }
     r.message = "Игроки готовы. Создатель лобби может начать игру".into();
     let accounts = state.accounts.read().await;
-    let out = json!({"room":room_summary(r,&accounts),"account":accounts.get(&id).map(|a|a.public(true))});
+    let connected = state.clients.read().await.keys().cloned().collect();
+    let out = json!({"room":room_summary(r,&accounts,&connected),"account":accounts.get(&id).map(|a|a.public(true))});
     drop(accounts);
     broadcast(&state, r, &id, "join", &body).await;
+    broadcast_lobby(&state, &rooms).await;
     (StatusCode::OK, Json(out)).into_response()
 }
 pub async fn action(
@@ -574,6 +588,7 @@ pub async fn action(
             push_account(&state, &p.id).await;
         }
     }
+    broadcast_lobby(&state, &rooms).await;
     (StatusCode::OK, Json(json!({"ok":true}))).into_response()
 }
 async fn leave_inner(state: &AppState, rooms: &mut HashMap<String, Room>, rid: &str, id: &str) {
@@ -627,6 +642,7 @@ pub async fn leave(
     if let Some(rid) = rid {
         leave_inner(&state, &mut rooms, &rid, &id).await;
     }
+    broadcast_lobby(&state, &rooms).await;
     if let Some(c) = state.clients.read().await.get(&id) {
         let _ =
             c.sender
@@ -669,6 +685,7 @@ pub async fn profile(
     {
         broadcast(&state, r, &id, "rename", &body).await;
     }
+    broadcast_lobby(&state, &rooms).await;
     (StatusCode::OK, Json(out)).into_response()
 }
 pub async fn watch(
@@ -823,13 +840,7 @@ pub async fn connected(state: &AppState, id: &str) {
                 .try_send(Ok(axum::response::sse::Event::default()
                     .data(json!({"type":"noroom"}).to_string())));
     }
-    let accounts = state.accounts.read().await;
-    let lobby = json!({"type":"lobby","online":state.clients.read().await.len(),"rooms":rooms.values().map(|r|room_summary(r,&accounts)).collect::<Vec<_>>(),"history":[]});
-    for c in state.clients.read().await.values() {
-        let _ = c.sender.try_send(Ok(
-            axum::response::sse::Event::default().data(lobby.to_string())
-        ));
-    }
+    broadcast_lobby(state, &rooms).await;
 }
 pub async fn disconnected(state: &AppState, id: &str) {
     let mut rooms = state.rooms.write().await;
@@ -839,6 +850,7 @@ pub async fn disconnected(state: &AppState, id: &str) {
     {
         broadcast(state, r, id, "disconnect", &json!({})).await;
     }
+    broadcast_lobby(state, &rooms).await;
 }
 pub async fn api_status(state: &AppState) -> impl IntoResponse {
     let rooms = state.rooms.read().await;
