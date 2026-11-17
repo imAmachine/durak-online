@@ -1,0 +1,5 @@
+node_modules/
+.crush/
+.env
+.env.*
+!.env.example

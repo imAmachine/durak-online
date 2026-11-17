@@ -24,7 +24,7 @@ BASE_URL=http://127.0.0.1:4174 npm test
 
 ## Architecture
 
-### Server (`server.js`, ~945 lines)
+### Server (`server.js`, 1072 lines)
 
 Single-file Node HTTP server. All state is in in-memory structures:
 
@@ -53,7 +53,9 @@ Entry points:
   `since` and `until` matches (`any | game | your-turn | opponent | finished`), otherwise
   `{ hit: false }` after `timeout` (200-60000 ms). It answers with the journal slice, the
   room sequence, and a per-viewer snapshot, so an agent can wait for its turn without
-  polling or chat messages.
+  polling or chat messages. The current room journal keeps up to 40 events and this
+  endpoint returns at most the last 12; an old `since` value does not guarantee a full
+  replay.
 - `POST /api/profile`, `POST /api/leave`, `POST /api/admin`, `GET /api/status`.
 - Authenticated gameplay POSTs carry `clientId` and `body.token`; any POST supplying a
   `clientId` is also checked against `sessions` (including admin requests).
@@ -101,7 +103,7 @@ before validating; a rejected action clears it, so a failed move never lands in 
 the last eight events as `log`. Events carry only public data (played cards, actor ids,
 messages), so they are safe in a per-viewer snapshot.
 
-### Client (`app.js`, ~1238 lines)
+### Client (`app.js`, 1233 lines)
 
 Single non-module script loaded at the end of `index.html`; all DOM ids it uses are defined
 in `index.html`. Global mutable `state` object; server snapshots drive rendering
@@ -141,7 +143,7 @@ in `index.html`. Global mutable `state` object; server snapshots drive rendering
   (`sessionStorage`), so two tabs are two players.
 - Invite links are `/?code=XXXXXX`; `openJoinModal(code)` pre-fills the join modal.
 
-### MCP (`mcp/server.mjs`, ~1030 lines)
+### MCP (`mcp/server.mjs`, 1457 lines)
 
 A dependency-free MCP server on stdio (newline-delimited JSON-RPC) that drives the HTTP API,
 so an agent can open seats, play, and exercise the service. Project `.crushrc` registers it as
@@ -325,13 +327,17 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
   as loser. A finished leaver is retained in the room and can still receive final settlement;
   leaving a waiting room removes the player normally.
 - **Asset cache busting is manual.** Script/style URLs in `index.html` carry `?v=N`
-  (`app.js?v=30`, `style.css?v=53`). Bump the matching version when changing those files, or
+  (`app.js?v=31`, `style.css?v=53`). Bump the matching version when changing those files, or
   browsers may serve stale assets (static files are served without cache headers).
 - **Russian everywhere.** UI copy, server messages, README, and test labels are Russian.
   New user-facing strings should be Russian.
 - **Style:** 2-space indentation, semicolons, single quotes, arrow functions, `const`/`let`;
   do not add code comments. No external packages are used; prefer adding none.
 - UI work: the repo includes a design skill at `.crush/skills/frontend-design/SKILL.md`.
+- Rust migration planning: `docs/ARCHITECTURE.md` defines target boundaries for the
+  multi-game platform and SQLite-ready account model; `docs/MIGRATION_PLAN.md`
+  defines the staged engine, API, MCP and persistence migration. The browser UI stays
+  JavaScript and the legacy API contract is preserved during the transition.
 
 ## Testing notes
 
