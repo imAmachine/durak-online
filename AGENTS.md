@@ -143,10 +143,12 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
   30-second interval deletes rooms with no connected players (immediately if not playing, or
   once the room is older than 60 seconds) and finished rooms older than 30 minutes.
 - **Some rules live only in the permission flags.** `gameState()` contains constraints that
-  `act()` does not re-check (for example, `canAttack` requires the defender to hold at least
-  as many cards as the table rows, but `act('attack')` only enforces the 6-row cap and rank
-  match). When changing a rule, update `gameState()`, the corresponding `act()` branch, the
-  client pre-check in `playCard()`, and duplicate rank/beat helpers as needed.
+  `act()` does not re-check (for example, `canAttack` requires the defender to hold more
+  cards than there are *unbeaten* table rows, so already beaten pairs do not eat into the
+  limit; `act('attack')` only enforces the 6-row cap and rank match, and the client explains
+  the reason in a toast). When changing a rule, update `gameState()`, the corresponding
+  `act()` branch, the client pre-check in `playCard()`, and duplicate rank/beat helpers as
+  needed.
 - **`canStart` requires the host plus two connected players**; `start` filters the roster to
   connected players only. `join` is rejected while `status === 'playing'`.
 - **Leaving during play** clears the table, transfers host if needed, and normalizes roles;

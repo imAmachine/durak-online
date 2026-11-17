@@ -675,13 +675,30 @@ function beats(attack, defense, trump) {
   return defense.suit === trump && attack.suit !== trump;
 }
 
+function cardsWord(count) {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'карта';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'карты';
+  return 'карт';
+}
+
 async function playCard(cardId, targetCardId = null) {
   const game = state.game;
   if (!game || !game.you) return;
   const card = (game.hand || []).find(item => item.id === cardId);
   if (!card) return;
   if (game.you.role === 'attacker') {
-    if (!game.canAttack) return toast(game.takePending ? 'Больше подкидывать нечего' : 'Сейчас подкидывать нечем');
+    if (game.takePending) return toast('Соперник уже забирает карты — подкинуть не выйдет');
+    if (!game.canAttack) {
+      const defender = game.players.find(player => player.role === 'defender');
+      const openRows = game.table.filter(row => !row.defense).length;
+      if (game.table.length >= 6) return toast('На столе уже шесть пар — больше не подкинуть');
+      if (defender && defender.cards <= openRows) {
+        return toast(`Сопернику нечем отбиваться: у него ${defender.cards} ${cardsWord(defender.cards)} — больше не подкинуть`);
+      }
+      return toast('Сейчас подкидывать нечем');
+    }
     if (game.table.length && !game.table.some(row => row.attack.rank === card.rank || (row.defense && row.defense.rank === card.rank))) {
       return toast(`Можно подкидывать только ${[...new Set(game.table.flatMap(row => [row.attack.rank, row.defense ? row.defense.rank : row.attack.rank]))].join(', ')}`);
     }

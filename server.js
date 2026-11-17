@@ -217,11 +217,12 @@ function gameState(room, clientId) {
   const attackRanks = new Set(room.table.map(row => row.attack.rank));
   const allUnbeaten = room.table.every(row => !row.defense);
   const hasUnbeaten = room.table.some(row => !row.defense);
+  const unbeatenRows = room.table.filter(row => !row.defense).length;
   const playing = room.status === 'playing';
   const isAttacking = Boolean(me && me.id === room.attackerId);
   const isDefending = Boolean(me && me.id === room.defenderId);
   const canAttack = Boolean(
-    me && playing && isAttacking && defender && defender.hand.length > room.table.length &&
+    me && playing && isAttacking && defender && defender.hand.length > unbeatenRows &&
     room.table.length < MAX_TABLE_CARDS &&
     (room.table.length === 0 || me.hand.some(card => allRanks.has(card.rank)))
   );
