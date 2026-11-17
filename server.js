@@ -10,6 +10,7 @@ const HOST = process.env.HOST || '0.0.0.0';
 const clients = new Map();
 const rooms = new Map();
 const history = [];
+const accounts = new Map();
 
 const SUITS = ['♠', '♥', '♦', '♣'];
 const RANKS_36 = ['6', '7', '8', '9', '10', 'В', 'Д', 'К', 'Т'];
@@ -17,6 +18,9 @@ const RANKS_52 = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'В', 'Д', 'К'
 const VALUES = new Map(RANKS_52.map((rank, index) => [rank, index]));
 const MAX_TABLE_CARDS = 6;
 const MAX_PLAYERS = 6;
+const START_BALANCE = 1000;
+const BETS = [0, 50, 100, 250, 500];
+const ADMIN_KEY = process.env.ADMIN_KEY || 'durak-admin';
 
 function buildDeck(size) {
   const ranks = size === 52 ? RANKS_52 : RANKS_36;
@@ -38,6 +42,43 @@ function syncTrumpCard(room) {
 
 function findPlayer(room, id) {
   return room.players.find(player => player.id === id) || null;
+}
+
+function accountOf(id) {
+  let account = accounts.get(id);
+  if (!account) {
+    account = { id, name: 'Игрок', balance: START_BALANCE, games: 0, wins: 0, losses: 0, createdAt: Date.now(), activeAt: Date.now() };
+    accounts.set(id, account);
+  }
+  return account;
+}
+
+function publicAccount(account) {
+  return {
+    id: account.id,
+    name: account.name,
+    balance: account.balance,
+    games: account.games,
+    wins: account.wins,
+    losses: account.losses,
+    online: clients.has(account.id),
+  };
+}
+
+function renameAccount(id, name) {
+  const account = accountOf(id);
+  account.name = name;
+  account.activeAt = Date.now();
+}
+
+function roomOfPlayer(id) {
+  return [...rooms.values()].find(room => room.players.some(player => player.id === id)) || null;
+}
+
+function pushAccount(id) {
+  const client = clients.get(id);
+  if (!client) return;
+  send(client, { type: 'account', account: publicAccount(accountOf(id)) });
 }
 
 function nextActive(room, player) {
@@ -65,14 +106,18 @@ function tableRanks(room) {
   return ranks;
 }
 
-function createRoom({ name, mode, deckSize, host }) {
+function createRoom({ name, mode, deckSize, bet, host }) {
   let id = crypto.randomBytes(3).toString('hex').toUpperCase();
   while (rooms.has(id)) id = crypto.randomBytes(3).toString('hex').toUpperCase();
+  const stake = Number(bet);
   const room = {
     id,
     name: String(name || 'Новая партия').slice(0, 40),
     mode: mode === 'transfer' ? 'transfer' : 'classic',
     deckSize: Number(deckSize) === 52 ? 52 : 36,
+    bet: BETS.includes(stake) ? stake : 0,
+    pot: 0,
+    lastPayouts: null,
     hostId: host.id,
     players: [host],
     status: 'waiting',
@@ -101,6 +146,8 @@ function startRound(room) {
   room.takePending = null;
   room.status = 'playing';
   room.finished = null;
+  room.pot = 0;
+  room.lastPayouts = null;
   room.players.forEach(player => {
     player.finished = false;
     player.hand = [];
@@ -118,6 +165,57 @@ function startRound(room) {
   room.defenderId = defender.id;
   room.turnId = attacker.id;
   room.message = `${attacker.name} атакует. ${defender.name} отбивается. Козырь ${room.trump}`;
+}
+
+function stakeShortfall(room, players) {
+  const bet = room.bet || 0;
+  if (!bet) return null;
+  const poor = players.find(player => accountOf(player.id).balance < bet);
+  return poor ? `У игрока «${poor.name}» не хватает фишек на ставку ${bet}` : null;
+}
+
+function chargeStakes(room) {
+  const bet = room.bet || 0;
+  if (!bet) return;
+  room.players.forEach(player => {
+    accountOf(player.id).balance -= bet;
+  });
+  room.pot = bet * room.players.length;
+}
+
+function settleAccounts(room, loserId) {
+  const bet = room.bet || 0;
+  const winners = room.players.filter(player => player.id !== loserId);
+  room.players.forEach(player => {
+    const account = accountOf(player.id);
+    account.games += 1;
+    if (player.id === loserId) account.losses += 1;
+    else account.wins += 1;
+  });
+  room.lastPayouts = {};
+  if (bet && room.pot > 0) {
+    if (winners.length) {
+      const share = Math.floor(room.pot / winners.length);
+      let remainder = room.pot - share * winners.length;
+      winners.forEach(player => {
+        const extra = remainder > 0 ? 1 : 0;
+        remainder -= extra;
+        const amount = share + extra;
+        accountOf(player.id).balance += amount;
+        room.lastPayouts[player.id] = amount - bet;
+      });
+    }
+    if (loserId) room.lastPayouts[loserId] = -bet;
+  }
+  room.pot = 0;
+}
+
+function finishGame(room, loser, message) {
+  room.status = 'finished';
+  room.finished = { loser: loser ? loser.name : '—', loserId: loser ? loser.id : null };
+  room.message = message || (loser ? `${loser.name} — дурак, партия окончена` : 'Игра завершена');
+  history.push({ room: room.name, mode: room.mode, at: Date.now(), loser: room.finished.loser, bet: room.bet || 0 });
+  settleAccounts(room, room.finished.loserId);
 }
 
 function refillHands(room) {
@@ -166,10 +264,7 @@ function settle(room) {
   const active = room.players.filter(player => !player.finished);
   if (active.length <= 1) {
     const durak = active[0] || null;
-    room.status = 'finished';
-    room.finished = { loser: durak ? durak.name : '—' };
-    room.message = durak ? `${durak.name} — дурак, партия окончена` : 'Игра завершена';
-    history.push({ room: room.name, mode: room.mode, at: Date.now(), loser: room.finished.loser });
+    finishGame(room, durak, durak ? `${durak.name} — дурак, партия окончена` : 'Игра завершена');
     return;
   }
   normalizeRoles(room);
@@ -242,6 +337,7 @@ function gameState(room, clientId) {
       name: room.name,
       mode: room.mode,
       deckSize: room.deckSize,
+      bet: room.bet || 0,
       status: room.status,
       hostId: room.hostId,
     },
@@ -283,6 +379,7 @@ function gameState(room, clientId) {
     canTake,
     takePending: Boolean(room.takePending),
     canStart: Boolean(me && room.hostId === me.id && room.status !== 'playing' && connected >= 2),
+    payout: room.lastPayouts && me ? room.lastPayouts[me.id] || 0 : 0,
     finished: room.finished,
   };
 }
@@ -294,6 +391,7 @@ function roomSummary(room) {
     name: room.name,
     mode: room.mode,
     deckSize: room.deckSize,
+    bet: room.bet || 0,
     status: room.status,
     host: host ? host.name : '—',
     players: room.players.filter(player => player.connected).map(player => ({ id: player.id, name: player.name, cards: player.hand.length, connected: player.connected })),
@@ -323,7 +421,9 @@ function broadcastLobby() {
 function broadcastRoom(room) {
   room.players.forEach(player => {
     const client = clients.get(player.id);
-    if (client) send(client, { type: 'game', state: gameState(room, player.id) });
+    if (!client) return;
+    send(client, { type: 'game', state: gameState(room, player.id) });
+    pushAccount(player.id);
   });
   broadcastLobby();
 }
@@ -340,6 +440,7 @@ function leaveRoom(client) {
     broadcastLobby();
     return;
   }
+  const wasPlaying = room.status === 'playing';
   room.players = room.players.filter(item => item.id !== client.id);
   if (!room.players.length) {
     rooms.delete(room.id);
@@ -347,18 +448,20 @@ function leaveRoom(client) {
     return;
   }
   if (room.hostId === client.id) room.hostId = room.players[0].id;
-  if (room.status === 'playing') {
+  if (wasPlaying) {
     room.table = [];
+    room.takePending = null;
+    const account = accountOf(client.id);
+    account.games += 1;
+    account.losses += 1;
     if (room.players.length < 2) {
       const survivor = room.players[0];
-      room.status = 'finished';
-      room.finished = { loser: survivor.name };
-      room.message = `${survivor.name} остался один, партия окончена`;
-      history.push({ room: room.name, mode: room.mode, at: Date.now(), loser: survivor.name });
+      finishGame(room, player, `${player.name} покинул партию. ${survivor.name} остался один, игра окончена`);
     } else {
       normalizeRoles(room);
       room.message = `${player.name} покинул игру`;
     }
+    pushAccount(client.id);
     broadcastRoom(room);
     return;
   }
@@ -374,11 +477,16 @@ function act(client, data) {
   const action = data.action;
 
   if (action === 'start') {
+    if (room.status === 'playing') return { error: 'Партия уже идёт' };
     if (room.hostId !== me.id) return { error: 'Игру начинает создатель лобби' };
     const ready = room.players.filter(player => player.connected);
     if (ready.length < 2) return { error: 'Нужно минимум два игрока' };
+    const shortfall = stakeShortfall(room, ready);
+    if (shortfall) return { error: shortfall };
     room.players = ready;
     startRound(room);
+    chargeStakes(room);
+    if (room.bet) room.message += `. Банк ${room.pot} фишек`;
     broadcastRoom(room);
     return { ok: true };
   }
@@ -528,6 +636,7 @@ const server = http.createServer(async (req, res) => {
     }
     const client = { id, name, res, roomId: null };
     clients.set(id, client);
+    renameAccount(id, name);
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',
@@ -535,13 +644,15 @@ const server = http.createServer(async (req, res) => {
       'X-Accel-Buffering': 'no',
     });
     res.write('retry: 2000\n\n');
-    const room = [...rooms.values()].find(item => item.players.some(player => player.id === id));
+    send(client, { type: 'account', account: publicAccount(accountOf(id)) });
+    const room = roomOfPlayer(id);
     if (room) {
       client.roomId = room.id;
       const player = findPlayer(room, id);
       if (player) {
         player.connected = true;
         player.name = name;
+        player.offlineAt = null;
       }
       send(client, { type: 'game', state: gameState(room, id) });
     } else {
@@ -551,10 +662,13 @@ const server = http.createServer(async (req, res) => {
     req.on('close', () => {
       if (clients.get(id) !== client) return;
       clients.delete(id);
-      const current = [...rooms.values()].find(item => item.players.some(player => player.id === id));
+      const current = roomOfPlayer(id);
       if (current) {
         const player = findPlayer(current, id);
-        if (player) player.connected = false;
+        if (player) {
+          player.connected = false;
+          player.offlineAt = Date.now();
+        }
         broadcastRoom(current);
       }
       broadcastLobby();
@@ -568,11 +682,16 @@ const server = http.createServer(async (req, res) => {
     if (!client) return json(res, 400, { error: 'Нет соединения с сервером, обновите страницу' });
     if (client.roomId && rooms.has(client.roomId)) return json(res, 400, { error: 'Вы уже в лобби' });
     if (body.playerName) client.name = String(body.playerName).slice(0, 20);
+    renameAccount(client.id, client.name);
+    const stake = BETS.includes(Number(body.bet)) ? Number(body.bet) : 0;
+    if (stake > accountOf(client.id).balance) {
+      return json(res, 400, { error: `Недостаточно фишек: для ставки ${stake} нужен баланс не меньше ${stake}` });
+    }
     const host = { id: client.id, name: client.name, hand: [], connected: true, finished: false };
-    const room = createRoom({ name: body.name, mode: body.mode, deckSize: body.deckSize, host });
+    const room = createRoom({ name: body.name, mode: body.mode, deckSize: body.deckSize, bet: stake, host });
     client.roomId = room.id;
     broadcastRoom(room);
-    return json(res, 201, { room: roomSummary(room), code: room.id });
+    return json(res, 201, { room: roomSummary(room), code: room.id, account: publicAccount(accountOf(client.id)) });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/join') {
@@ -581,23 +700,32 @@ const server = http.createServer(async (req, res) => {
     if (!client) return json(res, 400, { error: 'Нет соединения с сервером, обновите страницу' });
     const room = rooms.get(String(body.roomId || '').toUpperCase());
     if (!room) return json(res, 404, { error: 'Лобби с таким кодом не найдено' });
+    if (client.roomId && client.roomId !== room.id && rooms.has(client.roomId)) leaveRoom(client);
     if (body.playerName) client.name = String(body.playerName).slice(0, 20);
+    renameAccount(client.id, client.name);
     const existing = findPlayer(room, client.id);
     if (existing) {
       existing.connected = true;
+      existing.offlineAt = null;
       existing.name = client.name;
       client.roomId = room.id;
       broadcastRoom(room);
-      return json(res, 200, { room: roomSummary(room) });
+      return json(res, 200, { room: roomSummary(room), account: publicAccount(accountOf(client.id)) });
     }
     if (room.status === 'playing') return json(res, 400, { error: 'Игра уже началась' });
-    room.players = room.players.filter(player => clients.has(player.id));
-    if (room.players.length >= MAX_PLAYERS) return json(res, 400, { error: 'В лобби нет свободных мест' });
+    if (room.players.length >= MAX_PLAYERS) {
+      const now = Date.now();
+      room.players = room.players.filter(player => clients.has(player.id) || now - (player.offlineAt || now) < 60 * 1000);
+      if (room.players.length >= MAX_PLAYERS) return json(res, 400, { error: 'В лобби нет свободных мест' });
+    }
+    if (room.bet && accountOf(client.id).balance < room.bet) {
+      return json(res, 400, { error: `Недостаточно фишек: ставка за столом ${room.bet}` });
+    }
     room.players.push({ id: client.id, name: client.name, hand: [], connected: true, finished: false });
     client.roomId = room.id;
     room.message = 'Игроки готовы. Создатель лобби может начать игру';
     broadcastRoom(room);
-    return json(res, 200, { room: roomSummary(room) });
+    return json(res, 200, { room: roomSummary(room), account: publicAccount(accountOf(client.id)) });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/action') {
@@ -615,6 +743,7 @@ const server = http.createServer(async (req, res) => {
     const name = String(body.name || '').trim().slice(0, 20);
     if (!name) return json(res, 400, { error: 'Имя не может быть пустым' });
     client.name = name;
+    renameAccount(client.id, name);
     rooms.forEach(room => {
       const player = findPlayer(room, client.id);
       if (player) player.name = name;
@@ -622,7 +751,75 @@ const server = http.createServer(async (req, res) => {
     const room = rooms.get(client.roomId);
     if (room) broadcastRoom(room);
     else broadcastLobby();
-    return json(res, 200, { ok: true, name });
+    return json(res, 200, { ok: true, name, account: publicAccount(accountOf(client.id)) });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/admin') {
+    const body = await readBody(req);
+    if (String(body.key || '') !== ADMIN_KEY) return json(res, 403, { error: 'Неверный ключ администратора' });
+    const op = String(body.op || 'list');
+
+    if (op === 'list') {
+      const players = [...accounts.values()]
+        .sort((a, b) => (Number(clients.has(b.id)) - Number(clients.has(a.id))) || b.activeAt - a.activeAt)
+        .map(account => {
+          const room = roomOfPlayer(account.id);
+          return Object.assign(publicAccount(account), { room: room ? room.name : null, roomId: room ? room.id : null, activeAt: account.activeAt });
+        });
+      return json(res, 200, { ok: true, players });
+    }
+
+    const account = accounts.get(String(body.id || ''));
+    if (!account) return json(res, 404, { error: 'Игрок не найден' });
+
+    if (op === 'update') {
+      if (body.name !== undefined) {
+        const name = String(body.name).trim().slice(0, 20);
+        if (!name) return json(res, 400, { error: 'Имя не может быть пустым' });
+        account.name = name;
+        const client = clients.get(account.id);
+        if (client) client.name = name;
+        rooms.forEach(room => {
+          const player = findPlayer(room, account.id);
+          if (player) player.name = name;
+        });
+      }
+      const asCount = (value, fallback) => {
+        const number = Math.floor(Number(value));
+        return Number.isFinite(number) ? Math.max(0, Math.min(1e9, number)) : fallback;
+      };
+      if (body.balance !== undefined) account.balance = asCount(body.balance, account.balance);
+      if (body.games !== undefined) account.games = asCount(body.games, account.games);
+      if (body.wins !== undefined) account.wins = asCount(body.wins, account.wins);
+      if (body.losses !== undefined) account.losses = asCount(body.losses, account.losses);
+      account.activeAt = Date.now();
+      const room = roomOfPlayer(account.id);
+      if (room) broadcastRoom(room);
+      else broadcastLobby();
+      pushAccount(account.id);
+      return json(res, 200, { ok: true, player: publicAccount(account) });
+    }
+
+    if (op === 'reset') {
+      account.balance = START_BALANCE;
+      account.games = 0;
+      account.wins = 0;
+      account.losses = 0;
+      account.activeAt = Date.now();
+      pushAccount(account.id);
+      return json(res, 200, { ok: true, player: publicAccount(account) });
+    }
+
+    if (op === 'balance') {
+      const delta = Math.floor(Number(body.delta));
+      if (!Number.isFinite(delta) || !delta) return json(res, 400, { error: 'Укажите сумму пополнения' });
+      account.balance = Math.max(0, Math.min(1e9, account.balance + delta));
+      account.activeAt = Date.now();
+      pushAccount(account.id);
+      return json(res, 200, { ok: true, player: publicAccount(account) });
+    }
+
+    return json(res, 400, { error: 'Неизвестная операция' });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/leave') {
@@ -638,7 +835,7 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, {
       online: clients.size,
       clients: [...clients.values()].map(client => ({ id: client.id.slice(0, 8), name: client.name, roomId: client.roomId })),
-      rooms: [...rooms.values()].map(room => ({ id: room.id, status: room.status, players: room.players.length })),
+      rooms: [...rooms.values()].map(room => ({ id: room.id, status: room.status, bet: room.bet || 0, pot: room.pot || 0, players: room.players.length })),
     });
   }
 

@@ -29,9 +29,12 @@ try {
 const RANK_ORDER = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'В', 'Д', 'К', 'Т'];
 const SUIT_ORDER = ['♠', '♥', '♦', '♣'];
 const AVATAR_TINTS = ['#dceadf', '#f0dfe2', '#f2e7ca', '#dbe7f1', '#e6e0f1', '#f6e2d6'];
+const BET_OPTIONS = [0, 50, 100, 250, 500];
+const EMPTY_ACCOUNT = { balance: 0, games: 0, wins: 0, losses: 0 };
 
 const state = {
   profile: loadProfile(),
+  account: { ...EMPTY_ACCOUNT },
   lobby: { rooms: [], online: 0, history: [] },
   game: null,
   filter: 'all',
@@ -61,6 +64,14 @@ function saveProfile() {
 
 function esc(value) {
   return String(value).replace(/[&<>"']/g, symbol => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[symbol]));
+}
+
+function chips(value) {
+  return new Intl.NumberFormat('ru-RU').format(Number(value) || 0);
+}
+
+function betLabel(bet) {
+  return bet ? `${chips(bet)} фишек` : 'Без ставки';
 }
 
 function initials(name) {
@@ -188,14 +199,28 @@ function renderProfile() {
   const avatar = document.querySelector('#profileAvatar');
   avatar.textContent = initials(state.profile.name);
   avatar.style.background = AVATAR_TINTS[state.profile.tint % AVATAR_TINTS.length];
+  const balance = document.querySelector('#profileBalance');
+  if (balance) balance.textContent = `${chips(state.account.balance)} фишек`;
 }
 renderProfile();
 
 function openProfileModal() {
+  const account = state.account;
   openModal(`
     <div class="modal-label">УЧЁТНАЯ ЗАПИСЬ</div>
     <h2>Мой профиль</h2>
     <p class="modal-subtitle">Имя видят другие игроки в лобби и за столом</p>
+    <div class="wallet">
+      <div class="wallet-main">
+        <span>Баланс клуба</span>
+        <strong>${chips(account.balance)}<small>фишек</small></strong>
+      </div>
+      <div class="wallet-stats">
+        <span><b>${account.games}</b>партий</span>
+        <span><b>${account.wins}</b>побед</span>
+        <span><b>${account.losses}</b>поражений</span>
+      </div>
+    </div>
     <label>Имя игрока<input id="mName" maxlength="20" value="${esc(state.profile.name)}"></label>
     <label>Цвет аватара
       <div class="swatches" id="mSwatches">
@@ -203,6 +228,7 @@ function openProfileModal() {
       </div>
     </label>
     <div class="modal-actions">
+      <button class="ghost-btn admin-link" id="mAdmin">Панель клуба</button>
       <button class="secondary-btn" id="mCancel">Отмена</button>
       <button class="primary-btn" id="mSave">Сохранить</button>
     </div>
@@ -214,6 +240,7 @@ function openProfileModal() {
       tint = Number(button.dataset.tint);
       root.querySelectorAll('.swatch').forEach(item => item.classList.toggle('active', item === button));
     });
+    root.querySelector('#mAdmin').addEventListener('click', openAdminPanel);
     root.querySelector('#mCancel').addEventListener('click', closeModal);
     root.querySelector('#mSave').addEventListener('click', async () => {
       const name = root.querySelector('#mName').value.trim().slice(0, 20);
@@ -222,9 +249,10 @@ function openProfileModal() {
       if (button.disabled) return;
       button.disabled = true;
       try {
-        await api('/api/profile', { clientId, name });
+        const data = await api('/api/profile', { clientId, name });
         state.profile = { name, tint };
         saveProfile();
+        if (data.account) state.account = data.account;
         renderProfile();
         closeModal();
         toast('Профиль сохранён');
@@ -257,6 +285,10 @@ function renderLobby() {
     const modeLabel = room.mode === 'transfer' ? 'Переводной' : 'Подкидной';
     const playing = room.status === 'playing';
     const mine = Boolean(state.game && state.game.room.id === room.id);
+    const bet = Number(room.bet) || 0;
+    const extra = room.players.length - 4;
+    const canAfford = !bet || mine || !state.account.id || bet <= state.account.balance;
+    const label = mine ? 'Вернуться' : playing ? 'Идёт игра' : canAfford ? 'Войти' : 'Мало фишек';
     return `
       <article class="game-card">
         <div class="game-head">
@@ -264,12 +296,15 @@ function renderLobby() {
             <h3 class="game-title">${esc(room.name)}</h3>
             <div class="game-meta">Создатель: ${esc(room.host)}</div>
           </div>
-          <span class="mode ${room.mode}">${modeLabel}</span>
+          <div class="game-flags">
+            <span class="mode ${room.mode}">${modeLabel}</span>
+            ${bet ? `<span class="bet-pill" title="Ставка за столом">${chips(bet)} фишек</span>` : ''}
+          </div>
         </div>
         <div class="game-foot">
-          <div class="stacked">${room.players.slice(0, 4).map(player => avatarHTML(player.name)).join('')}</div>
+          <div class="stacked">${room.players.slice(0, 4).map(player => avatarHTML(player.name)).join('')}${extra > 0 ? `<span class="mini-avatar more" title="Ещё ${extra} за столом">+${extra}</span>` : ''}</div>
           <span class="slots">${room.players.length} / ${room.seats} · ${room.deckSize} карт</span>
-          <button class="join-btn" data-room="${esc(room.id)}" ${playing && !mine ? 'disabled' : ''}>${mine ? 'Вернуться' : playing ? 'Идёт игра' : 'Войти'}</button>
+          <button class="join-btn" data-room="${esc(room.id)}" ${(playing && !mine) || !canAfford ? 'disabled' : ''}>${label}</button>
         </div>
       </article>
     `;
@@ -298,6 +333,8 @@ document.querySelector('#lobbyFilter').addEventListener('click', event => {
 async function joinRoom(code) {
   try {
     const data = await api('/api/join', { clientId, roomId: String(code).toUpperCase(), playerName: state.profile.name });
+    if (data.account) state.account = data.account;
+    renderProfile();
     openGameView();
     toast(`Вы вошли в «${data.room.name}»`);
     return true;
@@ -315,6 +352,7 @@ function openGameView() {
 /* create / join / history / rules / settings modals */
 function openCreateModal() {
   const defaultName = `${state.profile.name} — партия`;
+  const options = BET_OPTIONS.map(bet => `<option value="${bet}" ${bet > state.account.balance ? 'disabled' : ''}>${betLabel(bet)}</option>`).join('');
   openModal(`
     <div class="modal-label">НОВАЯ ИГРА</div>
     <h2>Создать лобби</h2>
@@ -333,9 +371,19 @@ function openCreateModal() {
           <option value="52">52 карты</option>
         </select>
       </label>
+      <label class="wide">Ставка
+        <select id="mBet">${options}</select>
+      </label>
     </div>
+    <p class="modal-note">Ставку вносит каждый игрок при старте партии. Дурак остаётся без своей ставки, остальные делят банк. Баланс: ${chips(state.account.balance)} фишек.</p>
     <button class="primary-btn full" id="mCreate">Создать лобби</button>
   `, root => {
+    root.querySelector('#mBet').addEventListener('change', event => {
+      if (Number(event.target.value) > state.account.balance) {
+        event.target.value = '0';
+        toast('Недостаточно фишек для такой ставки');
+      }
+    });
     root.querySelector('#mCreate').addEventListener('click', async () => {
       const button = root.querySelector('#mCreate');
       button.disabled = true;
@@ -345,12 +393,15 @@ function openCreateModal() {
           name: root.querySelector('#mRoomName').value.trim() || 'Партия',
           mode: root.querySelector('#mMode').value,
           deckSize: Number(root.querySelector('#mDeck').value),
+          bet: Number(root.querySelector('#mBet').value),
           playerName: state.profile.name,
         });
+        if (data.account) state.account = data.account;
+        renderProfile();
         state.autoOpen = true;
         closeModal();
         openGameView();
-        toast(`Лобби создано. Код: ${data.code}`);
+        toast(data.room.bet ? `Лобби создано. Код: ${data.code} · ставка ${chips(data.room.bet)}` : `Лобби создано. Код: ${data.code}`);
       } catch (error) {
         button.disabled = false;
         toast(error.message);
@@ -399,7 +450,7 @@ document.querySelector('#historyBtn').addEventListener('click', () => {
     <div class="modal-label">АРХИВ</div>
     <h2>История игр</h2>
     <p class="modal-subtitle">Последние завершённые партии на сервере</p>
-    ${items.length ? `<ul class="history-list">${items.map(item => `<li><span>${esc(item.room)}<br><small>${item.mode === 'transfer' ? 'Переводной' : 'Подкидной'} · ${new Date(item.at).toLocaleString('ru-RU')}</small></span><strong>${esc(item.loser)}</strong></li>`).join('')}</ul>` : '<div class="empty-state">Пока ни одна партия не завершилась</div>'}
+    ${items.length ? `<ul class="history-list">${items.map(item => `<li><span>${esc(item.room)}<br><small>${item.mode === 'transfer' ? 'Переводной' : 'Подкидной'}${item.bet ? ` · ставка ${chips(item.bet)}` : ''} · ${new Date(item.at).toLocaleString('ru-RU')}</small></span><strong>${esc(item.loser)}</strong></li>`).join('')}</ul>` : '<div class="empty-state">Пока ни одна партия не завершилась</div>'}
   `);
 });
 
@@ -443,8 +494,194 @@ function openSettingsModal() {
   });
 }
 
+/* admin */
+function adminKey() {
+  try {
+    return sessionStorage.getItem('durak.admin') || '';
+  } catch (error) {
+    return '';
+  }
+}
+
+function storeAdminKey(key) {
+  try {
+    if (key) sessionStorage.setItem('durak.admin', key);
+    else sessionStorage.removeItem('durak.admin');
+  } catch (error) {
+    /* ключ не сохранится между перезагрузками */
+  }
+}
+
+function syncAdminNav() {
+  const item = document.querySelector('.nav-item[data-view="admin"]');
+  if (item) item.hidden = !adminKey();
+}
+
+function adminApi(payload) {
+  return api('/api/admin', { key: adminKey(), ...payload });
+}
+
+function openAdminPanel() {
+  if (!adminKey()) return openAdminGate();
+  adminApi({ op: 'list' }).then(data => {
+    const players = data.players || [];
+    const online = players.filter(player => player.online).length;
+    openModal(`
+      <div class="modal-label">ПАНЕЛЬ КЛУБА</div>
+      <h2>Игроки</h2>
+      <p class="modal-subtitle">${players.length} записей · ${online} онлайн · балансы и статистика правятся вручную</p>
+      <label>Поиск<input id="aSearch" placeholder="Имя или ID" autocomplete="off"></label>
+      <div class="admin-list" id="aList"></div>
+    `, root => {
+      const search = root.querySelector('#aSearch');
+      const list = root.querySelector('#aList');
+      const draw = () => {
+        const term = search.value.trim().toLowerCase();
+        const visible = players.filter(player => !term || player.name.toLowerCase().includes(term) || player.id.toLowerCase().includes(term));
+        list.innerHTML = visible.length
+          ? visible.map(player => `
+            <button class="admin-row" data-player="${esc(player.id)}" aria-label="Профиль ${esc(player.name)}">
+              ${avatarHTML(player.name)}
+              <span class="admin-main">
+                <strong>${esc(player.name)}</strong>
+                <small>${esc(player.id.slice(0, 8))}${player.room ? ` · стол «${esc(player.room)}»` : ''}</small>
+              </span>
+              <span class="admin-money">
+                <b>${chips(player.balance)}</b>
+                <small>${player.games} игр · ${player.wins} побед · ${player.online ? 'онлайн' : 'офлайн'}</small>
+              </span>
+            </button>
+          `).join('')
+          : '<div class="admin-empty">Никого не нашли</div>';
+        list.querySelectorAll('[data-player]').forEach(row => {
+          row.addEventListener('click', () => {
+            const player = players.find(item => item.id === row.dataset.player);
+            if (player) openAdminPlayer(player);
+          });
+        });
+      };
+      search.addEventListener('input', draw);
+      draw();
+    });
+  }).catch(error => {
+    if (error.message.toLowerCase().includes('ключ')) {
+      storeAdminKey('');
+      syncAdminNav();
+    }
+    toast(error.message);
+  });
+}
+
+function openAdminGate() {
+  openModal(`
+    <div class="modal-label">ДОСТУП</div>
+    <h2>Панель клуба</h2>
+    <p class="modal-subtitle">Ключ задаётся переменной окружения ADMIN_KEY на сервере</p>
+    <label>Ключ администратора<input id="aKey" type="password" autocomplete="off" placeholder="Ключ"></label>
+    <div class="modal-actions">
+      <button class="secondary-btn" id="aCancel">Отмена</button>
+      <button class="primary-btn" id="aEnter">Войти</button>
+    </div>
+  `, root => {
+    const input = root.querySelector('#aKey');
+    const submit = async () => {
+      const key = input.value.trim();
+      if (!key) return toast('Введите ключ');
+      const button = root.querySelector('#aEnter');
+      if (button.disabled) return;
+      button.disabled = true;
+      try {
+        await api('/api/admin', { key, op: 'list' });
+        storeAdminKey(key);
+        syncAdminNav();
+        openAdminPanel();
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message);
+      }
+    };
+    root.querySelector('#aCancel').addEventListener('click', closeModal);
+    root.querySelector('#aEnter').addEventListener('click', submit);
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        submit();
+      }
+    });
+  });
+}
+
+function openAdminPlayer(player) {
+  openModal(`
+    <div class="modal-label">ПРОФИЛЬ ИГРОКА</div>
+    <h2>${esc(player.name)}</h2>
+    <p class="modal-subtitle">ID ${esc(player.id)}${player.room ? ` · стол «${esc(player.room)}»` : ''}</p>
+    <div class="modal-grid">
+      <label>Имя<input id="aName" maxlength="20" value="${esc(player.name)}"></label>
+      <label>Баланс, фишек<input id="aBalance" type="number" min="0" step="10" value="${player.balance}"></label>
+    </div>
+    <div class="modal-grid modal-grid-3">
+      <label>Партии<input id="aGames" type="number" min="0" value="${player.games}"></label>
+      <label>Победы<input id="aWins" type="number" min="0" value="${player.wins}"></label>
+      <label>Поражения<input id="aLosses" type="number" min="0" value="${player.losses}"></label>
+    </div>
+    <div class="modal-actions">
+      <button class="ghost-btn" id="aBack">К списку</button>
+      <button class="secondary-btn" id="aReset">Сбросить прогресс</button>
+      <button class="primary-btn" id="aSave">Сохранить</button>
+    </div>
+  `, root => {
+    root.querySelector('#aBack').addEventListener('click', openAdminPanel);
+    let armed = false;
+    const reset = root.querySelector('#aReset');
+    reset.addEventListener('click', async () => {
+      if (!armed) {
+        armed = true;
+        reset.textContent = 'Точно сбросить?';
+        return;
+      }
+      reset.disabled = true;
+      try {
+        await adminApi({ op: 'reset', id: player.id });
+        toast('Прогресс игрока сброшен');
+        openAdminPanel();
+      } catch (error) {
+        reset.disabled = false;
+        toast(error.message);
+      }
+    });
+    root.querySelector('#aSave').addEventListener('click', async () => {
+      const name = root.querySelector('#aName').value.trim();
+      if (!name) return toast('Введите имя');
+      const button = root.querySelector('#aSave');
+      if (button.disabled) return;
+      button.disabled = true;
+      const number = id => Number(root.querySelector(id).value);
+      try {
+        await adminApi({
+          op: 'update',
+          id: player.id,
+          name,
+          balance: number('#aBalance'),
+          games: number('#aGames'),
+          wins: number('#aWins'),
+          losses: number('#aLosses'),
+        });
+        toast('Данные игрока обновлены');
+        openAdminPanel();
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message);
+      }
+    });
+  });
+}
+
 /* navigation */
-new ResizeObserver(() => fitHand()).observe(document.querySelector('#myHand'));
+new ResizeObserver(() => {
+  fitHand();
+  fitTable();
+}).observe(document.querySelector('#myHand'));
 
 document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', () => {
@@ -460,9 +697,12 @@ document.querySelectorAll('.nav-item').forEach(item => {
       openRulesModal();
     } else if (view === 'settings') {
       openSettingsModal();
+    } else if (view === 'admin') {
+      openAdminPanel();
     }
   });
 });
+syncAdminNav();
 
 function setView(view) {
   state.view = view;
@@ -517,6 +757,10 @@ function connect() {
     if (payload.type === 'lobby') {
       state.lobby = payload;
       renderLobby();
+    } else if (payload.type === 'account') {
+      state.account = payload.account;
+      renderProfile();
+      if (state.view === 'lobby') renderLobby();
     } else if (payload.type === 'game') {
       state.game = payload.state;
       if (state.autoOpen) {
@@ -593,7 +837,7 @@ function renderGame() {
   const previousTable = new Set([...document.querySelectorAll('[data-target-card]')].map(card => card.dataset.targetCard));
   document.querySelector('#tableName').textContent = game.room.name;
   const modeLabel = game.room.mode === 'transfer' ? 'Переводной' : 'Подкидной';
-  document.querySelector('#tableMode').textContent = `${modeLabel} · ${game.room.deckSize} карт${game.trump ? ` · козырь ${game.trump}` : ''}`;
+  document.querySelector('#tableMode').textContent = `${modeLabel} · ${game.room.deckSize} карт${game.room.bet ? ` · ставка ${chips(game.room.bet)}` : ''}${game.trump ? ` · козырь ${game.trump}` : ''}`;
   document.querySelector('#roomCode').textContent = `КОД ${game.room.id}`;
 
   const trump = document.querySelector('#trumpCard');
@@ -807,10 +1051,13 @@ function renderFinish(game) {
     return;
   }
   overlay.classList.add('open');
+  const payout = Number(game.payout) || 0;
+  const bet = Number(game.room.bet) || 0;
   overlay.innerHTML = `
     <div class="finish-card">
       <h2>Игра окончена</h2>
       <p>${esc(game.finished.loser)} — дурак</p>
+      ${bet ? `<div class="finish-payout ${payout < 0 ? 'down' : 'up'}">${payout > 0 ? '+' : ''}${chips(payout)}<small>фишек</small></div>` : ''}
       <div class="modal-actions">
         ${game.canStart ? '<button class="primary-btn" id="finishRestart">Играть снова</button>' : ''}
         <button class="secondary-btn" id="finishLeave">В лобби</button>
