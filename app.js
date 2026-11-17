@@ -779,6 +779,7 @@ function connect() {
       if (state.game) {
         state.game = null;
         document.querySelector('#finishOverlay').classList.remove('open');
+        if (document.querySelector('#confirmLeave')) closeModal();
         setView('lobby');
         toast('Лобби больше не существует');
       }
@@ -1011,9 +1012,10 @@ function renderActions(game) {
     }
     buttons.push({ label: `Код: ${game.room.id}`, action: 'copy', style: 'secondary-btn' });
   }
-  const html = buttons.map(button => `<button class="${button.style}" ${button.disabled ? 'disabled' : ''} data-action="${button.action || ''}">${esc(button.label)}</button>`).join('');
-  if (actions.innerHTML === html) return;
-  actions.innerHTML = html;
+  const signature = JSON.stringify(buttons);
+  if (actions.dataset.signature === signature) return;
+  actions.dataset.signature = signature;
+  actions.innerHTML = buttons.map(button => `<button class="${button.style}" ${button.disabled ? 'disabled' : ''} data-action="${button.action || ''}">${esc(button.label)}</button>`).join('');
   actions.querySelectorAll('button[data-action]').forEach(element => {
     const action = element.dataset.action;
     if (!action) return;
