@@ -74,6 +74,14 @@ function betLabel(bet) {
   return bet ? `${chips(bet)} фишек` : 'Без ставки';
 }
 
+function wordForm(count, forms) {
+  const rest10 = count % 10;
+  const rest100 = count % 100;
+  if (rest10 === 1 && rest100 !== 11) return forms[0];
+  if (rest10 >= 2 && rest10 <= 4 && (rest100 < 12 || rest100 > 14)) return forms[1];
+  return forms[2];
+}
+
 function initials(name) {
   return String(name).trim().split(/\s+/).slice(0, 2).map(part => part[0] || '').join('').toUpperCase() || '?';
 }
@@ -265,11 +273,24 @@ function openProfileModal() {
 }
 
 /* lobby */
+function renderMasthead() {
+  const now = new Date();
+  const weekday = now.toLocaleDateString('ru-RU', { weekday: 'long' });
+  document.querySelector('#mastheadWeekday').textContent = weekday.charAt(0).toUpperCase() + weekday.slice(1);
+  document.querySelector('#mastheadDay').textContent = now.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+  document.querySelector('#mastheadTime').textContent = now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+}
+
 function renderLobby() {
   document.querySelector('#onlineCount').textContent = state.lobby.online;
   const grid = document.querySelector('#gamesGrid');
   const rooms = state.lobby.rooms.filter(room => state.filter === 'all' || room.mode === state.filter);
   document.querySelector('#roomCount').textContent = rooms.length ? String(rooms.length).padStart(2, '0') : '';
+  const tables = state.lobby.rooms.length;
+  const online = Number(state.lobby.online) || 0;
+  document.querySelector('#mastheadNote').textContent = tables
+    ? `${tables} ${wordForm(tables, ['стол', 'стола', 'столов'])} · ${online} ${wordForm(online, ['игрок', 'игрока', 'игроков'])}`
+    : 'Клуб открыт, столы свободны';
   grid.setAttribute('aria-busy', String(!state.connected));
   if (!state.connected) {
     grid.innerHTML = '<div class="empty-state"><span class="empty-symbol" aria-hidden="true">♠</span><h3>Готовим столы</h3><p>Ждём соединения с сервером. Подключимся автоматически.</p></div>';
@@ -730,8 +751,8 @@ function updateResumeButton() {
   if (!button) {
     button = document.createElement('button');
     button.id = 'resumeBtn';
-    button.className = 'primary-btn';
-    document.querySelector('.top-actions').prepend(button);
+    button.className = 'ghost-btn resume-btn';
+    document.querySelector('.console-actions').prepend(button);
   }
   button.textContent = `Вернуться в игру «${state.game.room.name}»`;
   button.onclick = () => setView('game');
@@ -1101,7 +1122,78 @@ document.querySelector('#leaveRoom').addEventListener('click', () => {
   });
 });
 
+/* ambient backdrop: random cards and chips that spawn offscreen and drift behind the glass */
+const AMBIENT_LAYERS = {
+  far: { count: 4, width: [110, 200], dim: .35, duration: [190, 270] },
+  mid: { count: 4, width: [160, 280], dim: .46, duration: [120, 180] },
+  near: { count: 3, width: [220, 400], dim: .62, duration: [78, 115] }
+};
+
+function randomBetween(min, max) {
+  return min + Math.random() * (max - min);
+}
+
+function pick(items) {
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+function ambientObjectHTML(width) {
+  const suit = pick(SUIT_ORDER);
+  const roll = Math.random();
+  if (roll < .3) {
+    return `<span class="amb-chip ${pick(['amb-chip--red', 'amb-chip--green', ''])}" style="--w:${Math.round(width * .56)}px"></span>`;
+  }
+  if (roll < .58) return `<span class="amb-card amb-card--back"><i>${suit}</i></span>`;
+  const rank = pick(RANK_ORDER.slice(6));
+  const red = suit === '♥' || suit === '♦';
+  return `<span class="card-face amb-card${red ? ' red' : ''}">${cardCornersHTML({ rank, suit })}</span>`;
+}
+
+function ambientPropHTML(config, initial) {
+  const cap = Math.min(innerWidth * .3, config.width[1]);
+  const width = Math.round(randomBetween(Math.min(config.width[0], cap), cap));
+  const duration = randomBetween(config.duration[0], config.duration[1]);
+  const style = [
+    `--w:${width}px`,
+    `--y:${randomBetween(2, 86).toFixed(1)}%`,
+    `--dy:${randomBetween(-20, 14).toFixed(1)}vh`,
+    `--dur:${duration.toFixed(1)}s`,
+    `--delay:${(initial ? -randomBetween(0, duration) : 0).toFixed(1)}s`,
+    `--dim:${Math.min(1, config.dim * randomBetween(.9, 1.1)).toFixed(2)}`,
+    `--rx:${randomBetween(2, 82).toFixed(1)}%`,
+    `--tilt:${randomBetween(-22, 22).toFixed(1)}deg`,
+    `--turn:${randomBetween(-22, 22).toFixed(1)}deg`,
+    `--sway:${randomBetween(14, 30).toFixed(1)}s`,
+    `--sway-delay:${(-randomBetween(0, 20)).toFixed(1)}s`,
+    `--wobble-x:${randomBetween(10, 34).toFixed(0)}px`,
+    `--wobble-y:${randomBetween(8, 26).toFixed(0)}px`
+  ].join(';');
+  return `<span class="amb-prop" style="${style}">${ambientObjectHTML(width)}</span>`;
+}
+
+function startAmbient() {
+  Object.entries(AMBIENT_LAYERS).forEach(([name, config]) => {
+    const layer = document.querySelector(`.ambient-${name}`);
+    if (!layer) return;
+    const spawn = initial => {
+      layer.insertAdjacentHTML('beforeend', ambientPropHTML(config, initial));
+      const prop = layer.lastElementChild;
+      const recycle = event => {
+        if (event.target !== prop || event.animationName !== 'ambDrift') return;
+        prop.removeEventListener('animationiteration', recycle);
+        prop.remove();
+        spawn(false);
+      };
+      prop.addEventListener('animationiteration', recycle);
+    };
+    for (let index = 0; index < config.count; index += 1) spawn(true);
+  });
+}
+
 /* start */
+startAmbient();
+renderMasthead();
+setInterval(renderMasthead, 30000);
 renderLobby();
 connect();
 

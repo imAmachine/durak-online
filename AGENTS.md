@@ -122,7 +122,7 @@ layouts and `prefers-reduced-motion` rules live near the end of the stylesheet.
 The hero banner and playing table are intentionally dark in both themes, so they use the
 fixed `--felt-ink` / `--felt-brass` tokens instead of `--ivory` / `--brass` (those flip in
 light mode and would become unreadable). Table geometry is hand-tuned: seats are placed by
-`.pos-1`…`.pos-5`, the deck sits at the lower left, and table cards form one nowrap row.
+`.pos-1`…`.pos-5`, the deck sits at the lower right, and table cards form one nowrap row.
 Keep seats, deck, cards, message, and hand non-overlapping; the layout is verified from
 320px to 1600px, including the 961–1180px range where seats shrink via their own breakpoint
 and five opponents plus six pairs are the tightest case. On narrow screens the hero card fan
@@ -130,6 +130,33 @@ moves into a bottom band, which relies on the extra bottom padding on `.hero-ban
 sized so the fan and its `.hero-note` badge never cover the hero footer). The fan follows the
 table's corner convention, a rank with the suit centered under it and the pair mirrored in
 the opposite corner, and scales from .84 down to .48 across the breakpoints.
+
+Lobby chrome: the page header carries only the title and `.club-masthead` (weekday, date,
+clock, and a live "N столов · N игроков" line written by `renderMasthead()` / `renderLobby()`).
+Every lobby action (history, join by code, create) and the mode `.filter` live in
+`.lobby-console` under the "Открытые столы" heading, and `updateResumeButton()` prepends the
+"Вернуться в игру" button to `.console-actions`. Keep actions out of `.topbar`; below 960px
+the actions collapse into a two-column grid.
+
+Page backdrop: a fixed `.ambient` layer sits at `z-index: 0` behind `.app-shell` (`z-index: 1`).
+`startAmbient()` spawns random props into three depth layers: `.ambient-far` (dimmest, slowest),
+`.ambient-mid` (read through the frosted `.ambient-glass` pane with `backdrop-filter`), and
+`.ambient-near` (above the pane with a 1px blur, softened by `.ambient-haze` so suits stay
+readable, largest and fastest). Only the pane blurs the layers behind it, so no single card
+looks separately over-blurred. Faces are built with
+`cardCornersHTML()` inside a real `.card-face`, so corners, pips, courts and aces are the same as
+at the table; cards are rendered at their final size (never transform-scaled, which aliases the
+hairlines) with `--w` driving the card variables. Props are fully opaque and get depth from the
+pane's blur plus per-layer brightness (`--dim`) instead of alpha, so a nearer card occludes
+everything behind it. Any card-level filter sits on the card or chip itself, never on the drifting
+`.amb-prop`: the wrapper's box is smaller than the rotated card, so filtering it clipped the card.
+Every prop starts and ends fully offscreen (`ambDrift` starts at `-(--w + 6vw)`) and is
+respawned on the drift's `animationiteration` (the handler checks `event.target` and
+`animationName`, because animation events bubble up from the swaying card) with a new random
+pattern, while `ambSway` adds rotation and a wobble in px on top of the drift. `.ambient-haze`
+carries the matte grain (`::after`, blended). The layer is `aria-hidden`, `pointer-events: none`,
+and becomes static under `prefers-reduced-motion` (`--rx` positions).
+Keep it purely decorative: no focusable or clickable content, and keep it behind all app content.
 
 The logo block (`.brand`) is locked against text selection and keeps the default cursor on
 hover. Wallet and admin components (`.wallet`, `.admin-row`, `.bet-pill`, `.finish-payout`)
@@ -216,7 +243,7 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
   records a loss for the leaver, and normalizes roles; if fewer than two players remain the
   game ends immediately with the leaver as the loser (the survivor wins the pot).
 - **Asset cache busting is manual.** Script/style URLs in `index.html` carry `?v=N`
-  (`app.js?v=17`, `style.css?v=28`). Bump the matching version when changing those files, or
+  (`app.js?v=19`, `style.css?v=38`). Bump the matching version when changing those files, or
   browsers may serve stale assets (static files are served without cache headers).
 - **Russian everywhere.** UI copy, server messages, README, and test labels are Russian.
   New user-facing strings should be Russian.

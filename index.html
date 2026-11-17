@@ -6,9 +6,16 @@
   <meta name="theme-color" content="#080d0a">
   <meta name="description" content="Дурак онлайн для своей компании. Создайте стол, отправьте друзьям код и сыграйте в подкидного или переводного.">
   <title>Дурак Онлайн · Карточный клуб</title>
-  <link rel="stylesheet" href="style.css?v=28">
+  <link rel="stylesheet" href="style.css?v=47">
 </head>
 <body>
+  <div class="ambient" aria-hidden="true">
+    <div class="ambient-layer ambient-far"></div>
+    <div class="ambient-layer ambient-mid"></div>
+    <div class="ambient-glass"></div>
+    <div class="ambient-layer ambient-near"></div>
+    <div class="ambient-haze"></div>
+  </div>
   <a class="skip-link" href="#main">Перейти к содержимому</a>
   <div class="app-shell" id="appShell">
     <aside class="sidebar" aria-label="Карточный клуб">
@@ -35,11 +42,11 @@
       <div id="lobbyView">
         <header class="topbar">
           <div><p class="eyebrow">ВАШ ВЕЧЕР. ВАША КОМПАНИЯ.</p><h1>Лобби</h1></div>
-          <div class="top-actions">
-            <button class="ghost-btn" id="historyBtn">История игр</button>
-            <button class="ghost-btn" id="joinRoomBtn">Войти по коду <span aria-hidden="true">↗</span></button>
-            <button class="primary-btn" id="createBtn"><span aria-hidden="true">+</span> Создать стол</button>
-          </div>
+          <aside class="club-masthead" aria-label="Сегодня в клубе">
+            <p class="masthead-label">Сегодня в клубе <span id="mastheadTime">21:00</span></p>
+            <p class="masthead-date"><span id="mastheadWeekday">Понедельник</span><em id="mastheadDay">17 ноября</em></p>
+            <p class="masthead-note" id="mastheadNote">Клуб открыт, столы свободны</p>
+          </aside>
         </header>
         <section class="hero-banner" aria-labelledby="heroTitle">
           <div class="hero-copy">
@@ -61,19 +68,26 @@
         <div class="ornament" aria-hidden="true"><i></i><span>♠</span><i></i><span>♥</span><i></i><span>♦</span><i></i><span>♣</span><i></i></div>
         <section class="section-head" aria-labelledby="openGamesTitle">
           <div><p class="eyebrow">НАЙДИТЕ СВОЮ КОМПАНИЮ</p><h2 id="openGamesTitle">Открытые столы <span id="roomCount"></span></h2><p class="connection-status" id="connectionStatus" role="status">Соединяемся с клубом…</p></div>
+        </section>
+        <div class="lobby-console">
           <div class="filter" id="lobbyFilter" role="group" aria-label="Режим игры">
             <button class="filter-active" data-filter="all" aria-pressed="true">Все</button>
             <button data-filter="classic" aria-pressed="false">Подкидной</button>
             <button data-filter="transfer" aria-pressed="false">Переводной</button>
           </div>
-        </section>
+          <div class="console-actions">
+            <button class="ghost-btn" id="historyBtn">История игр</button>
+            <button class="ghost-btn" id="joinRoomBtn">Войти по коду <span aria-hidden="true">↗</span></button>
+            <button class="primary-btn" id="createBtn"><span aria-hidden="true">+</span> Создать стол</button>
+          </div>
+        </div>
         <section class="games-grid" id="gamesGrid" aria-label="Список открытых столов" aria-busy="true"></section>
         <section class="rules-brief" aria-label="Коротко об игре">
           <article class="rule-card"><span class="rule-icon" aria-hidden="true">01</span><h3>Подкидной</h3><p>Знакомая классика. Подкидывайте карты того же достоинства, что уже на столе.</p></article>
           <article class="rule-card"><span class="rule-icon" aria-hidden="true">02</span><h3>Переводной</h3><p>Добавьте интригу. Переведите ход картой того же достоинства на соседа.</p></article>
           <article class="rule-card"><span class="rule-icon" aria-hidden="true">03</span><h3>Всё по правилам</h3><p>Мы проверяем ходы и считаем карты. Вам остаётся наслаждаться партией.</p></article>
         </section>
-        <footer class="lobby-footer"><span>Дурак онлайн · Для своих</span><span aria-hidden="true">♠ <span>♥</span> ♦ ♣</span><span>Хорошего вечера и удачной карты.</span></footer>
+        <footer class="lobby-footer"><span>Дурак онлайн · Для своих</span><span class="made-by">Made by VMDEV</span><span>Хорошего вечера и удачной карты.</span></footer>
       </div>
       <section class="game-screen" id="gameScreen" aria-label="Игровой стол">
         <header class="game-top">
@@ -107,6 +121,6 @@
     </div>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
-  <script src="app.js?v=17"></script>
+  <script src="app.js?v=25"></script>
 </body>
 </html>

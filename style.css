@@ -115,7 +115,206 @@ a { color: var(--brass); text-underline-offset: 3px; }
 
 .skip-link:focus { transform: translateY(0); }
 
-.app-shell { display: flex; min-height: 100vh; position: relative; }
+.ambient {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.ambient-layer { position: absolute; inset: 0; }
+
+/* each prop drifts across the viewport; the path starts and ends fully offscreen */
+/* props stay fully opaque so closer objects occlude the ones behind them;
+   distance is expressed with blur + brightness instead of alpha */
+.amb-prop {
+  position: absolute;
+  top: var(--y, 0%);
+  left: 0;
+  animation: ambDrift var(--dur, 96s) linear var(--delay, 0s) infinite;
+  will-change: transform;
+}
+
+/* cards behind the pane get the pane's blur only, so none of them looks
+   separately over-blurred; depth comes from brightness, size and speed */
+.ambient-far .amb-card,
+.ambient-far .amb-chip { filter: brightness(var(--dim, .35)) saturate(.85); }
+
+.ambient-mid .amb-card,
+.ambient-mid .amb-chip { filter: brightness(var(--dim, .46)) saturate(.95); }
+
+.ambient-near .amb-card,
+.ambient-near .amb-chip { filter: blur(1px) brightness(var(--dim, .62)) saturate(.95); }
+
+.amb-card,
+.amb-chip {
+  position: relative;
+  transform-origin: 50% 50%;
+  animation: ambSway var(--sway, 18s) ease-in-out var(--sway-delay, 0s) infinite alternate;
+}
+
+/* cards keep the game geometry at their own size, so hairlines and glyphs stay crisp */
+.amb-card {
+  --card-w: var(--w, 160px);
+  --card-h: calc(var(--w, 160px) * 1.39);
+  --corner-size: calc(var(--w, 160px) * .25);
+  --pip-size: calc(var(--w, 160px) * .17);
+  --ace-size: calc(var(--w, 160px) * .55);
+  --court-size: calc(var(--w, 160px) * .4);
+  width: var(--w, 160px);
+  height: calc(var(--w, 160px) * 1.39);
+}
+
+.ambient .card-face {
+  border-width: calc(var(--card-w) * .009);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, .42), inset 0 0 0 calc(var(--card-w) * .009) rgba(255, 255, 255, .72);
+}
+
+.ambient .card-face::before { border-width: calc(var(--card-w) * .009); }
+
+.ambient .card-court {
+  border-radius: calc(var(--card-w) * .027);
+  box-shadow:
+    inset 0 0 0 calc(var(--card-w) * .018) rgba(255, 253, 247, .85),
+    inset 0 0 0 calc(var(--card-w) * .027) rgba(28, 32, 24, .18);
+}
+
+.amb-card--back {
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(236, 223, 197, .34);
+  border-radius: calc(var(--w, 160px) * .09);
+  color: rgba(233, 200, 143, .7);
+  background:
+    radial-gradient(circle at 50% 50%, rgba(233, 200, 143, .16) 0 26%, transparent 27%),
+    repeating-linear-gradient(45deg, rgba(233, 200, 143, .13) 0 1px, transparent 1px 7px),
+    repeating-linear-gradient(-45deg, rgba(233, 200, 143, .09) 0 1px, transparent 1px 7px),
+    #0f352a;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, .45), inset 0 0 0 1px rgba(255, 255, 255, .05);
+}
+
+.amb-card--back::before {
+  content: '';
+  position: absolute;
+  inset: calc(var(--w, 160px) * .07);
+  border: 1px solid rgba(233, 200, 143, .24);
+  border-radius: calc(var(--w, 160px) * .04);
+}
+
+.amb-card--back i {
+  font: 500 calc(var(--w, 160px) * .3)/1 var(--font-display);
+  font-style: normal;
+  opacity: .85;
+}
+
+/* clay chip: coloured rim with ivory inserts, recessed centre and a suit mark */
+.amb-chip {
+  display: block;
+  width: var(--w, 96px);
+  height: var(--w, 96px);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 26%, rgba(255, 255, 255, .26), transparent 58%),
+    repeating-conic-gradient(from -6deg, rgba(243, 236, 221, .92) 0 9deg, transparent 9deg 45deg),
+    linear-gradient(180deg, rgba(255, 255, 255, .16), rgba(0, 0, 0, .3)),
+    var(--chip-base, var(--brass));
+  box-shadow:
+    inset 0 0 0 2px rgba(0, 0, 0, .34),
+    inset 0 3px 7px rgba(255, 255, 255, .18),
+    0 10px 22px rgba(0, 0, 0, .5);
+}
+
+.amb-chip::before {
+  content: '';
+  position: absolute;
+  inset: 16%;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 32%, rgba(255, 255, 255, .14), transparent 62%),
+    var(--chip-face, #10382a);
+  box-shadow: 0 0 0 1px rgba(243, 236, 221, .28), inset 0 5px 10px rgba(0, 0, 0, .5);
+}
+
+.amb-chip::after {
+  content: '♠';
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--chip-ink, var(--brass-bright));
+  font: 500 30px/1 var(--font-display);
+  opacity: .9;
+}
+
+.amb-chip--red { --chip-base: #a8483d; --chip-face: #143528; --chip-ink: #f3ecdd; }
+.amb-chip--green { --chip-base: #2f6b4b; --chip-face: #0f2d21; --chip-ink: #e9c88f; }
+
+@keyframes ambDrift {
+  from { transform: translate3d(calc((var(--w, 160px) + 6vw) * -1), calc(34vh + var(--dy, 0vh)), 0); }
+  to { transform: translate3d(108vw, calc(-34vh + var(--dy, 0vh)), 0); }
+}
+
+@keyframes ambSway {
+  from { transform: translate3d(calc(var(--wobble-x, 20px) * -1), var(--wobble-y, 12px), 0) rotate(var(--tilt, 0deg)); }
+  to { transform: translate3d(var(--wobble-x, 20px), calc(var(--wobble-y, 12px) * -1), 0) rotate(calc(var(--tilt, 0deg) + var(--turn, 8deg))); }
+}
+
+/* the pane: far and mid props are read through this blur */
+.ambient-glass {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 80% at 78% -20%, rgba(200, 160, 92, .14), transparent 60%),
+    radial-gradient(90% 70% at 6% 110%, rgba(36, 132, 90, .38), transparent 62%),
+    linear-gradient(180deg, rgba(10, 30, 20, .44), rgba(4, 15, 10, .58));
+  backdrop-filter: blur(20px) saturate(130%);
+  -webkit-backdrop-filter: blur(20px) saturate(130%);
+}
+
+/* surface frost and grain that sit over the near props */
+.ambient-haze {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(112deg, transparent 32%, rgba(255, 255, 255, .03) 47%, transparent 60%),
+    radial-gradient(140% 100% at 50% 118%, rgba(233, 200, 143, .05), transparent 62%),
+    radial-gradient(130% 95% at 50% 45%, rgba(30, 92, 62, .14), transparent 72%),
+    linear-gradient(180deg, rgba(7, 20, 14, .1), rgba(4, 11, 8, .16));
+}
+
+.ambient-haze::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: .12;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 150px 150px;
+}
+
+[data-theme="light"] .ambient-glass {
+  background:
+    radial-gradient(120% 80% at 78% -20%, rgba(138, 103, 48, .12), transparent 60%),
+    radial-gradient(90% 70% at 6% 110%, rgba(70, 128, 96, .16), transparent 62%),
+    linear-gradient(180deg, rgba(244, 238, 227, .42), rgba(236, 229, 215, .6));
+}
+
+[data-theme="light"] .ambient-haze {
+  background:
+    linear-gradient(112deg, transparent 32%, rgba(255, 255, 255, .16) 47%, transparent 60%),
+    radial-gradient(140% 100% at 50% 118%, rgba(138, 103, 48, .09), transparent 62%),
+    linear-gradient(180deg, rgba(244, 238, 227, .1), rgba(236, 229, 215, .16));
+}
+
+@media (max-width: 760px) {
+  .ambient-glass { backdrop-filter: blur(16px) saturate(120%); -webkit-backdrop-filter: blur(16px) saturate(120%); }
+  .ambient-far .amb-card,
+  .ambient-far .amb-chip { filter: brightness(var(--dim, .35)) saturate(.85); }
+  .ambient-near .amb-card,
+  .ambient-near .amb-chip { filter: brightness(var(--dim, .62)) saturate(.95); }
+}
+.app-shell { display: flex; min-height: 100vh; position: relative; z-index: 1; }
 
 .app-shell::after {
   content: '';
@@ -387,7 +586,51 @@ a { color: var(--brass); text-underline-offset: 3px; }
   letter-spacing: -.035em;
 }
 
-.top-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding-bottom: 6px; }
+.club-masthead {
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+  max-width: 300px;
+  padding: 0 0 10px 26px;
+  border-left: 1px solid var(--line);
+  text-align: right;
+}
+
+.masthead-label {
+  color: var(--muted);
+  font: 600 9.5px/1.4 var(--font-sans);
+  letter-spacing: .2em;
+  text-transform: uppercase;
+}
+
+.masthead-label span {
+  margin-left: 8px;
+  color: var(--brass);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .1em;
+}
+
+.masthead-date {
+  display: grid;
+  font: 400 clamp(22px, 2vw, 27px)/1.1 var(--font-display);
+  letter-spacing: -.01em;
+}
+
+.masthead-date em {
+  color: var(--brass);
+  font-size: .68em;
+  font-style: italic;
+  letter-spacing: .01em;
+}
+
+.masthead-note {
+  margin-top: 5px;
+  color: var(--muted-2);
+  font: 500 9.5px/1.4 var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
 
 .ghost-btn, .primary-btn, .hero-btn, .secondary-btn {
   position: relative;
@@ -800,11 +1043,42 @@ a { color: var(--brass); text-underline-offset: 3px; }
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .5), 0 6px 14px rgba(0, 0, 0, .3);
 }
 
+.lobby-console {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px 20px;
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.console-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+
+.console-actions .ghost-btn,
+.console-actions .primary-btn {
+  min-height: 40px;
+  padding: 10px 17px;
+}
+
+.resume-btn { color: var(--brass); }
+
+.resume-btn::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brass-bright);
+  animation: livePulse 2.4s ease-in-out infinite;
+}
+
 .games-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(296px, 1fr));
   gap: 20px;
-  margin-top: 28px;
+  margin-top: 22px;
 }
 
 .game-card {
@@ -1039,10 +1313,9 @@ a { color: var(--brass); text-underline-offset: 3px; }
   text-transform: uppercase;
 }
 
-.lobby-footer > span:nth-child(2) { color: var(--brass); letter-spacing: .35em; }
-.lobby-footer > span:nth-child(2) span { color: var(--red); }
+.lobby-footer .made-by { color: var(--brass); letter-spacing: .28em; }
 
-.game-screen { display: none; }
+.game-screen { display: none; user-select: none; -webkit-user-select: none; }
 .game-screen.active { display: block; animation: fadeIn .45s var(--ease) both; }
 
 .game-top { align-items: center; margin-bottom: 20px; }
@@ -1210,9 +1483,9 @@ a { color: var(--brass); text-underline-offset: 3px; }
 
 .deck {
   position: absolute;
-  z-index: 3;
-  bottom: 22.5%;
-  left: 3.4%;
+  z-index: 2;
+  right: 3.4%;
+  bottom: 24%;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -1278,7 +1551,14 @@ a { color: var(--brass); text-underline-offset: 3px; }
 .deck-back i { font-style: normal; font-size: calc(var(--card-w) * .3); line-height: 1; opacity: .8; text-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
 .deck.empty .deck-back { opacity: .28; }
 
-.deck-count { color: rgba(232, 234, 217, .62); font: 500 calc(var(--card-w) * .1)/1 var(--font-sans); letter-spacing: .12em; text-transform: uppercase; }
+.deck-count {
+  align-self: center;
+  transform: translateX(calc((var(--deck-w) - var(--card-h)) / 2));
+  color: rgba(232, 234, 217, .62);
+  font: 500 calc(var(--card-w) * .1)/1 var(--font-sans);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
 
 .table-cards {
   position: absolute;
@@ -1776,6 +2056,7 @@ a { color: var(--brass); text-underline-offset: 3px; }
 .hero-banner { animation: riseIn .85s .06s var(--ease) both; }
 .ornament { animation: fadeIn .9s .18s var(--ease) both; }
 .section-head { animation: riseIn .7s .2s var(--ease) both; }
+.lobby-console { animation: fadeIn .7s .24s var(--ease) both; }
 .rules-brief { animation: riseIn .7s .28s var(--ease) both; }
 .lobby-footer { animation: fadeIn .8s .34s var(--ease) both; }
 
@@ -1816,7 +2097,10 @@ a { color: var(--brass); text-underline-offset: 3px; }
   .table { --card-w: 62px; }
   .table-cards { top: 55%; max-width: 96%; }
   .pair .card-face.defense { transform: rotate(2deg); }
-  .deck { bottom: 22%; left: 3.2%; }
+  .deck { right: 3.2%; bottom: 23.5%; }
+  .console-actions { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+  .console-actions .primary-btn,
+  .console-actions .resume-btn { grid-column: 1 / -1; }
 }
 
 @media (max-width: 760px) {
@@ -1861,8 +2145,9 @@ a { color: var(--brass); text-underline-offset: 3px; }
   .main-content { padding: 26px 18px 60px; }
   .topbar { display: block; }
   .topbar h1 { font-size: 46px; }
-  .top-actions { margin-top: 18px; gap: 7px; padding: 0; }
-  .top-actions .ghost-btn, .top-actions .primary-btn { padding: 11px 13px; font-size: 10px; }
+  .club-masthead { justify-items: start; max-width: none; margin-top: 20px; padding: 14px 0 0; border-top: 1px solid var(--line); border-left: 0; text-align: left; }
+  .masthead-date { display: flex; align-items: baseline; gap: 9px; font-size: 24px; }
+  .masthead-date em { font-size: .8em; }
   .hero-banner { min-height: 0; margin-top: 26px; padding: 34px 24px 266px; border-radius: 20px; }
   .hero-copy { max-width: none; }
   .hero-copy h2 { font-size: clamp(44px, 12vw, 62px); }
@@ -1879,7 +2164,9 @@ a { color: var(--brass); text-underline-offset: 3px; }
 
   .ornament { margin-bottom: 32px; }
   .section-head { display: block; }
-  .filter { width: max-content; margin-top: 18px; }
+  .lobby-console { margin-top: 18px; padding-top: 16px; gap: 12px; }
+  .filter { width: max-content; }
+  .console-actions { width: 100%; gap: 7px; }
   .games-grid { grid-template-columns: 1fr; gap: 16px; margin-top: 22px; }
   .game-card { min-height: 190px; padding: 22px 20px 18px; }
   .empty-state { flex-direction: column; align-items: flex-start; gap: 18px; padding: 28px 22px; }
@@ -1902,7 +2189,7 @@ a { color: var(--brass); text-underline-offset: 3px; }
   .pos-3 { top: 36%; left: 81%; }
   .pos-4 { top: 12%; left: 24%; }
   .pos-5 { top: 12%; left: 76%; }
-  .deck { bottom: 20%; left: 3.2%; }
+  .deck { right: 3.2%; bottom: 22%; }
   .table { --card-w: clamp(52px, 7.2vw, 62px); }
   .table-cards { top: 55%; max-width: 96%; }
   .pair .card-face.defense { transform: rotate(2deg); }
@@ -1930,7 +2217,7 @@ a { color: var(--brass); text-underline-offset: 3px; }
   .theme-toggle { width: 42px; }
   .main-content { padding-inline: 14px; }
   .topbar h1 { font-size: 42px; }
-  .top-actions .ghost-btn, .top-actions .primary-btn { padding: 10px 10px; font-size: 9.5px; letter-spacing: .03em; }
+  .console-actions .ghost-btn, .console-actions .primary-btn { padding: 10px 10px; font-size: 9.5px; letter-spacing: .03em; }
   .hero-banner { padding: 30px 20px 252px; }
   .hero-copy h2 { font-size: 42px; }
   .hero-footer { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
@@ -1957,4 +2244,6 @@ a { color: var(--brass); text-underline-offset: 3px; }
     scroll-behavior: auto !important;
     transition-duration: .01ms !important;
   }
+  .amb-prop { left: var(--rx, 0%); animation: none; }
+  .amb-card, .amb-chip { animation: none; }
 }
