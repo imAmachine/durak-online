@@ -1,6 +1,6 @@
 # План миграции движка, API и MCP на Rust
 
-Статус: подготовка, ветка `prep/rust-platform`.
+Статус: Rust foundation реализована, перенос API и durable storage продолжается.
 
 ## Решение
 
@@ -18,7 +18,7 @@
 - `style.css`;
 - существующий browser wire contract.
 
-Node.js остаётся работающим reference implementation до завершения parity-проверок. Big bang migration не используется.
+Node.js остаётся работающим reference implementation до завершения parity-проверок. Rust workspace уже содержит engine, API, server bootstrap, SQLite migrations и MCP adapter. Big bang migration не используется.
 
 ## Целевой стек
 
@@ -33,7 +33,7 @@ Node.js остаётся работающим reference implementation до за
 | MCP | собственный stdio JSON-RPC adapter на Tokio | сохранить текущий протокол без обязательной зависимости от MCP SDK |
 | Tests | cargo test, Axum service tests, reqwest black-box tests | unit, contract и real SSE coverage |
 
-Redis и внешняя распределённая СУБД не входят в первый production этап. SQLite остаётся источником истины для аккаунтов, партий, истории и финансов. SQLite рассчитан на один основной экземпляр Rust-сервиса; при переходе к нескольким writer-инстансам потребуется отдельная архитектура координации.
+Redis и внешняя распределённая СУБД не входят в первый production этап. Цель — сделать SQLite источником истины для аккаунтов, партий, истории и финансов; текущее состояние внедрения описано в этапе 5. SQLite рассчитан на один основной экземпляр Rust-сервиса; при переходе к нескольким writer-инстансам потребуется отдельная архитектура координации.
 
 ## Целевая структура workspace
 
@@ -166,26 +166,47 @@ money и full-game tests. Это необходимый compatibility gate, но
 
 ### Этап 5. SQLite, 4–6 дней
 
-1. Добавить migrations для users, sessions, profiles, tables, matches, participants, events, wallets и ledger.
-2. Сохранять match state с optimistic locking по `seq`.
-3. Сделать state, event и settlement одной транзакцией с уникальным
+1. Расширить migrations и публичную модель для users, oauth_identities, sessions,
+   profiles, tables, matches, participants, events, wallets и ledger.
+2. Довести durable match state с optimistic locking по `seq` до полного legacy API.
+3. Довести state, event и settlement до единой транзакции с уникальным
    `operation_id` на каждую операцию (`stake`, `payout`, `refund`, `admin_adjustment`);
    повтор той же операции должен быть no-op.
-4. Добавить restart recovery, cleanup jobs и migration tests.
+4. Добавить cleanup jobs, расширенные migration tests и production validation.
 5. Скрыть legacy anonymous accounts за feature flag.
 
 Текущий bootstrap подключает SQLite к lifecycle `platform-server`: путь берётся из
 `DURAK_DB` (по умолчанию `data/durak.sqlite`), каталог создаётся при необходимости,
 при старте применяются `rust/migrations`, а `/readyz` отвечает `200` только после
-успешного открытия и миграции базы. Repository пока является готовым wiring для
-следующего шага; комнаты и аккаунты продолжают жить in-memory и не записываются в
-него, поэтому рестарт ещё не восстанавливает игровые сессии.
+успешного открытия и миграции базы. Игровые переходы уже вызывают атомарный
+`commit_transition`: snapshot комнаты и изменения аккаунтов сохраняются с проверкой
+`seq`, одинаковый повтор идемпотентен. При старте snapshots валидируются, активные
+комнаты и аккаунты восстанавливаются; SSE, session tokens и pending OAuth-flow
+остаются in-memory. Интеграция истории находится в работе и требует проверки;
+полная account/session model требует отдельного этапа parity. При восстановлении
+идущей партии не покинувший её игрок без привязки Discord прерывает запуск с
+ошибкой комнаты и игрока. Автоматической отмены партии и возврата ставок нет;
+администратор должен внимательно разрешить миграцию или отмену комнаты с учётом
+балансов и ставок до повторного запуска. См. [миграцию активных комнат](BACKEND_PERSISTENCE.md#миграция-активных-комнат).
 
-Готово, когда restart не теряет завершённые партии, баланс и историю, повтор
-settlement не меняет результат, а failure-injection тесты покрывают сбой до commit,
-после commit и до публикации SSE.
+Базовое восстановление snapshots и аккаунтов, атомарность перехода и повтор
+settlement уже покрыты Rust-тестами. Этап готов полностью, когда restart не теряет
+завершённые партии и публичную историю, повтор settlement не меняет результат,
+а failure-injection тесты покрывают сбой до commit, после commit и до публикации SSE.
 
-### Этап 6. Переключение и развитие, 2–4 дня
+### Этап 6. Discord OAuth и аккаунты
+
+1. Зарегистрировать Discord OAuth application с разрешением `identify` и фиксированным redirect URI.
+2. Реализовать authorization code flow с `state` и PKCE; проверять redirect URI и ошибки провайдера, не хранить access token без необходимости.
+3. Привязать стабильный Discord user id к локальному `users.id`; профиль, кошелёк и статистика используют локальный id.
+4. Завершить durable session model, logout и отзыв. Привязка существующих гостевых данных должна быть явной и защищённой от захвата.
+5. Провести integration test callback/state/дубликатов/restart и недоступности Discord с реальными credentials. UI уже показывает доступность Discord, сохраняет flow secret в per-tab `sessionStorage`, обрабатывает callback и очищает query через `history.replaceState`.
+
+Для Rust API обязателен подтверждённый аккаунт Discord. Старые гостевые записи сохраняются, но вход по ним недоступен, автоматической привязки к Discord нет. Для сборки учётные данные Discord не нужны; без настройки новый вход недоступен. MCP требует предварительно авторизованные сессии, как описано в [документации адаптера](../rust/crates/platform-mcp/README.md).
+
+Текущие ограничения OAuth: все три `DISCORD_*` переменные обязательны вместе, redirect должен быть HTTPS (HTTP разрешён только для loopback), scope — `identify`, pending state/PKCE verifier живут в памяти пять минут, а rate limit — 10 стартов на IP за пять минут с process-local лимитами 4096 IP и 4096 flow. Доступность Discord и OAuth exchange ещё не проверены against real credentials.
+
+### Этап 7. Переключение и развитие
 
 1. Сравнить Rust и Node на parity suite и нагрузочном сценарии SSE.
 2. Направить MCP и browser traffic на Rust.
@@ -210,4 +231,4 @@ MCP не вычисляет legal moves, а contract test сравнивает h
 
 ## Решение о завершении миграции
 
-Миграция оправдана только после получения durable accounts, повторяемых settlement, restart recovery или измеримого требования по многопоточному SSE. Если эти критерии не нужны, Node reference и модульный JS engine остаются более дешёвым вариантом. Rust-перенос не должен быть объявлен завершённым только потому, что новый бинарник запускается.
+Миграция оправдана только после получения durable accounts, повторяемых settlement, restart recovery или измеримого требования по многопоточному SSE. Node reference и модульный JS engine сохраняются для сравнения и тестирования; Node backend не поддерживает обязательный вход через Discord и не заменяет основной сервер. Rust-перенос не должен быть объявлен завершённым только потому, что новый бинарник запускается.

@@ -7,7 +7,8 @@ dependencies, no build step. All user-facing text is Russian.
 ## Commands
 
 ```bash
-npm start        # node server.js; PORT env (default 4173), HOST env (default 0.0.0.0)
+npm start        # Rust platform-server; PORT env (default 4173), HOST env (default 0.0.0.0)
+node server.js   # legacy reference only; no mandatory Discord login
 npm run mcp      # mcp/server.mjs; MCP stdio server over the HTTP API
 npm test
 BASE_URL=http://127.0.0.1:4174 npm test

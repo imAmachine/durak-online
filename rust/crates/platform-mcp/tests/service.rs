@@ -16,7 +16,7 @@ impl Drop for Kill {
 }
 
 #[test]
-fn stdio_game_flow() {
+fn stdio_game_flow_with_legacy_node_backend() {
     let port = TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -42,6 +42,7 @@ fn stdio_game_flow() {
     let mut mcp = Kill(
         Command::new(env!("CARGO_BIN_EXE_platform-mcp"))
             .env("DURAK_URL", format!("http://127.0.0.1:{port}"))
+            .env("DURAK_DISCORD_ACCOUNTS", json!({"a":{"clientId":"testa","token":"a".repeat(64)},"b":{"clientId":"testb","token":"b".repeat(64)},"auto1":{"clientId":"testauto1","token":"c".repeat(64)},"auto2":{"clientId":"testauto2","token":"d".repeat(64)}}).to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()

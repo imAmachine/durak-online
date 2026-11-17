@@ -1,51 +1,17 @@
-function newId() {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-  const bytes = new Uint8Array(16);
-  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') crypto.getRandomValues(bytes);
-  else for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+function readCredentials() {
+  try {
+    const clientId = sessionStorage.getItem('durak.client');
+    const token = sessionStorage.getItem('durak.token');
+    if (/^discord:[A-Za-z0-9_-]+$/.test(clientId || '') && /^[a-f0-9]{64}$/.test(token || '')) return { clientId, token };
+  } catch (error) {
+    return null;
+  }
+  return null;
 }
 
-function readClientId() {
-  try {
-    const saved = sessionStorage.getItem('durak.client');
-    if (saved) return saved;
-  } catch (error) {
-    /* приватный режим может запрещать sessionStorage */
-  }
-  return newId();
-}
-
-function readSessionToken() {
-  let saved = null;
-  try {
-    saved = sessionStorage.getItem('durak.token');
-  } catch (error) {
-    saved = null;
-  }
-  if (/^[a-f0-9]{64}$/.test(saved || '')) return saved;
-  const bytes = new Uint8Array(32);
-  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') crypto.getRandomValues(bytes);
-  else for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
-  const token = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
-  try {
-    sessionStorage.setItem('durak.token', token);
-  } catch (error) {
-    return token;
-  }
-  return token;
-}
-
-const clientId = readClientId();
-const sessionToken = readSessionToken();
-try {
-  sessionStorage.setItem('durak.client', clientId);
-} catch (error) {
-  /* идентификатор будет жить только до перезагрузки */
-}
+let credentials = readCredentials();
+let clientId = credentials?.clientId || '';
+let sessionToken = credentials?.token || '';
 
 const RANK_ORDER = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'В', 'Д', 'К', 'Т'];
 const SUIT_ORDER = ['♠', '♥', '♦', '♣'];
@@ -115,8 +81,9 @@ function tintOf(person) {
   return AVATAR_TINTS[hash % AVATAR_TINTS.length];
 }
 
-function avatarHTML(name, className = 'mini-avatar') {
-  const tint = name === state.profile.name ? AVATAR_TINTS[state.profile.tint % AVATAR_TINTS.length] : tintOf(name);
+function avatarHTML(person, className = 'mini-avatar') {
+  const name = typeof person === 'string' ? person : (person && person.name) || '?';
+  const tint = tintOf(person);
   return `<span class="${className} avatar-tint" style="background:${tint}">${esc(initials(name))}</span>`;
 }
 
@@ -198,6 +165,114 @@ document.addEventListener('keydown', event => {
 
 /* profile */
 document.querySelector('#profileBtn').addEventListener('click', openProfileModal);
+
+async function authRequest(path, body) {
+  const response = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Вход через Discord недоступен');
+  return data;
+}
+
+function setDiscordLoginState(enabled, message) {
+  const button = document.querySelector('#discordLogin');
+  const status = document.querySelector('#discordStatus');
+  if (!button || !status) return;
+  button.disabled = !enabled;
+  button.textContent = enabled ? 'Войти через Discord' : 'Вход через Discord';
+  status.textContent = message;
+}
+
+function isDiscordCallback(url) {
+  return url.searchParams.has('state') && (url.searchParams.has('code') || url.searchParams.has('error'));
+}
+
+function inviteCodeFromUrl(url) {
+  return isDiscordCallback(url) ? null : url.searchParams.get('code');
+}
+
+function clearAuthQuery() {
+  const url = new URL(location.href);
+  url.searchParams.delete('code');
+  url.searchParams.delete('state');
+  url.searchParams.delete('error');
+  url.searchParams.delete('error_description');
+  try {
+    const invite = sessionStorage.getItem('durak.discord.invite');
+    if (invite) url.searchParams.set('code', invite);
+    sessionStorage.removeItem('durak.discord.invite');
+  } catch (error) {}
+  history.replaceState(null, document.title, `${url.pathname}${url.search}${url.hash}`);
+}
+
+async function completeDiscordLogin() {
+  const url = new URL(location.href);
+  if (!isDiscordCallback(url)) return false;
+  const code = url.searchParams.get('code');
+  const stateValue = url.searchParams.get('state');
+  let flowSecret;
+  try {
+    flowSecret = sessionStorage.getItem('durak.discord.flowSecret');
+  } catch (error) {
+    clearAuthQuery();
+    setDiscordLoginState(false, 'Не удалось получить доступ к хранилищу браузера. Разрешите хранение данных и попробуйте снова.');
+    return false;
+  }
+  clearAuthQuery();
+  if (!code || !stateValue || !flowSecret) {
+    setDiscordLoginState(false, 'Вход через Discord отменён или не подтверждён. Попробуйте ещё раз.');
+    try { sessionStorage.removeItem('durak.discord.flowSecret'); } catch (error) {}
+    return false;
+  }
+  try {
+    const data = await authRequest('/api/auth/discord/complete', { code, state: stateValue, flowSecret });
+    if (!/^discord:[A-Za-z0-9_-]{1,120}$/.test(data.clientId || '') || !/^[a-f0-9]{64}$/.test(data.token || '')) throw new Error('Сервер вернул неверные данные входа');
+    try {
+      sessionStorage.setItem('durak.client', data.clientId);
+      sessionStorage.setItem('durak.token', data.token);
+      sessionStorage.removeItem('durak.discord.flowSecret');
+    } catch (storageError) {
+      try { sessionStorage.removeItem('durak.client'); sessionStorage.removeItem('durak.token'); } catch (cleanupError) {}
+      throw new Error('Разрешите хранение данных в браузере и попробуйте снова');
+    }
+    location.reload();
+    return true;
+  } catch (error) {
+    try { sessionStorage.removeItem('durak.discord.flowSecret'); } catch (storageError) {}
+    setDiscordLoginState(false, `Не удалось войти: ${error.message}`);
+    return false;
+  }
+}
+
+async function prepareDiscordLogin() {
+  const button = document.querySelector('#discordLogin');
+  if (button) button.addEventListener('click', async () => {
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      const data = await authRequest('/api/auth/discord/start', {});
+      if (!data.url || !data.flowSecret) throw new Error('Сервер не вернул данные входа');
+      const invite = inviteCodeFromUrl(new URL(location.href));
+      if (invite) sessionStorage.setItem('durak.discord.invite', invite);
+      else sessionStorage.removeItem('durak.discord.invite');
+      sessionStorage.setItem('durak.discord.flowSecret', data.flowSecret);
+      location.assign(data.url);
+    } catch (error) {
+      button.disabled = false;
+      setDiscordLoginState(true, `Не удалось начать вход: ${error.message}`);
+    }
+  });
+  try {
+    const data = await authRequest('/api/auth/providers');
+    if (Array.isArray(data.providers) && data.providers.includes('discord')) {
+      const status = document.querySelector('#discordStatus');
+      setDiscordLoginState(true, status.textContent.includes('Не удалось') || status.textContent.includes('отменён') || status.textContent.includes('истекла') || status.textContent.includes('хранилищу') ? status.textContent : 'Войдите, чтобы присоединиться к клубу.');
+    } else {
+      setDiscordLoginState(false, 'Вход через Discord пока не настроен');
+    }
+  } catch (error) {
+    setDiscordLoginState(false, 'Вход через Discord недоступен');
+  }
+}
 function renderProfile() {
   document.querySelector('#profileName').textContent = state.profile.name;
   const avatar = document.querySelector('#profileAvatar');
@@ -319,7 +394,7 @@ function renderLobby() {
           </div>
         </div>
         <div class="game-foot">
-          <div class="stacked">${room.players.slice(0, 4).map(player => avatarHTML(player.name)).join('')}${extra > 0 ? `<span class="mini-avatar more" title="Ещё ${extra} за столом">+${extra}</span>` : ''}</div>
+          <div class="stacked">${room.players.slice(0, 4).map(player => avatarHTML(player)).join('')}${extra > 0 ? `<span class="mini-avatar more" title="Ещё ${extra} за столом">+${extra}</span>` : ''}</div>
           <span class="slots">${room.players.length} / ${room.seats} · ${room.deckSize} карт</span>
           <button class="join-btn" data-room="${esc(room.id)}" ${(playing && !mine) || !canAfford ? 'disabled' : ''}>${label}</button>
         </div>
@@ -472,7 +547,7 @@ document.querySelector('#historyBtn').addEventListener('click', () => {
     <div class="modal-label">АРХИВ</div>
     <h2>История игр</h2>
     <p class="modal-subtitle">Последние завершённые партии на сервере</p>
-    ${items.length ? `<ul class="history-list">${items.map(item => `<li><span>${esc(item.room)}<br><small>${item.mode === 'transfer' ? 'Переводной' : 'Подкидной'}${item.bet ? ` · ставка ${chips(item.bet)}` : ''} · ${new Date(item.at).toLocaleString('ru-RU')}</small></span><strong>${esc(item.loser)}</strong></li>`).join('')}</ul>` : '<div class="empty-state">Пока ни одна партия не завершилась</div>'}
+    ${items.length ? `<ul class="history-list">${items.map(item => `<li><span>${esc(item.room)}<br><small>${item.mode === 'transfer' ? 'Переводной' : 'Подкидной'}${item.bet ? ` · ставка ${chips(item.bet)}` : ''} · ${new Date(item.at).toLocaleString('ru-RU')}</small></span><strong>${item.loser === 'Ничья' ? 'Ничья' : `${esc(item.loser)} проиграл`}</strong></li>`).join('')}</ul>` : '<div class="empty-state">Пока ни одна партия не завершилась</div>'}
   `);
 });
 
@@ -534,22 +609,22 @@ function openAdminPanel() {
     openModal(`
       <div class="modal-label">ПАНЕЛЬ КЛУБА</div>
       <h2>Игроки</h2>
-      <p class="modal-subtitle">${players.length} записей · ${online} онлайн · балансы и статистика правятся вручную</p>
-      <label>Поиск<input id="aSearch" placeholder="Имя или ID" autocomplete="off"></label>
+      <p class="modal-subtitle">${players.length} профилей · ${online} онлайн · балансы и статистика правятся вручную</p>
+      <label>Поиск по нику<input id="aSearch" placeholder="Ник игрока" autocomplete="off"></label>
       <div class="admin-list" id="aList"></div>
     `, root => {
       const search = root.querySelector('#aSearch');
       const list = root.querySelector('#aList');
       const draw = () => {
         const term = search.value.trim().toLowerCase();
-        const visible = players.filter(player => !term || player.name.toLowerCase().includes(term) || player.id.toLowerCase().includes(term));
+        const visible = players.filter(player => !term || player.name.toLowerCase().includes(term));
         list.innerHTML = visible.length
           ? visible.map(player => `
             <button class="admin-row" data-player="${esc(player.id)}" aria-label="Профиль ${esc(player.name)}">
-              ${avatarHTML(player.name)}
+              ${avatarHTML(player)}
               <span class="admin-main">
                 <strong>${esc(player.name)}</strong>
-                <small>${esc(player.id.slice(0, 8))}${player.room ? ` · стол «${esc(player.room)}»` : ''}</small>
+                <small>${player.room ? `стол «${esc(player.room)}»` : 'вне стола'}</small>
               </span>
               <span class="admin-money">
                 <b>${chips(player.balance)}</b>
@@ -620,7 +695,7 @@ function openAdminPlayer(player) {
   openModal(`
     <div class="modal-label">ПРОФИЛЬ ИГРОКА</div>
     <h2>${esc(player.name)}</h2>
-    <p class="modal-subtitle">ID ${esc(player.id)}${player.room ? ` · стол «${esc(player.room)}»` : ''}</p>
+    <p class="modal-subtitle">Профиль игрока${player.room ? ` · стол «${esc(player.room)}»` : ''}</p>
     <div class="modal-grid">
       <label>Имя<input id="aName" maxlength="20" value="${esc(player.name)}"></label>
       <label>Баланс, фишек<input id="aBalance" type="number" min="0" step="10" value="${player.balance}"></label>
@@ -719,7 +794,10 @@ function setView(view) {
     else item.removeAttribute('aria-current');
   });
   updateResumeButton();
-  if (gameActive) fitHand();
+  if (gameActive) {
+    fitHand();
+    fitTable();
+  }
   if (view === 'lobby') renderLobby();
 }
 
@@ -741,11 +819,14 @@ function updateResumeButton() {
 }
 
 /* game */
+document.querySelector('#retryConnection').addEventListener('click', connect);
 function connect() {
+  if (!clientId || !sessionToken) return;
   if (state.source) state.source.close();
   state.source = new EventSource(`/events?id=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}&name=${encodeURIComponent(state.profile.name)}`);
   state.source.onopen = () => {
     state.connected = true;
+    document.querySelector('#retryConnection').hidden = true;
     document.querySelector('#connectionStatus').textContent = 'Столы обновляются в реальном времени';
     document.querySelector('#connectionStatus').dataset.status = 'online';
     renderLobby();
@@ -786,6 +867,14 @@ function connect() {
     }
   };
   state.source.onerror = () => {
+    if (state.source.readyState === EventSource.CLOSED) {
+      state.connected = false;
+      document.querySelector('#connectionStatus').textContent = 'Не удалось подключиться. Проверьте связь и повторите попытку.';
+      document.querySelector('#connectionStatus').dataset.status = 'offline';
+      document.querySelector('#retryConnection').hidden = false;
+      renderLobby();
+      return;
+    }
     state.connected = false;
     document.querySelector('#connectionStatus').textContent = 'Связь потеряна. Переподключаемся…';
     document.querySelector('#connectionStatus').dataset.status = 'offline';
@@ -850,6 +939,11 @@ function renderGame() {
   const trump = document.querySelector('#trumpCard');
   trump.innerHTML = game.trumpCard ? cardHTML(game.trumpCard) : '';
   trump.classList.toggle('empty', !game.trumpCard);
+  const trumpSuit = document.querySelector('#trumpSuit');
+  if (trumpSuit) {
+    trumpSuit.textContent = game.trump || '';
+    trumpSuit.classList.toggle('red', game.trump === '♥' || game.trump === '♦');
+  }
   const deckBox = document.querySelector('#deckBox');
   deckBox.classList.toggle('empty', !game.deck);
   deckBox.style.setProperty('--depth', String(Math.max(2, Math.min(7, Math.round(game.deck / 4) + 1))));
@@ -888,9 +982,10 @@ function renderGame() {
     seats.push(game.players[index]);
   }
   if (myIndex === -1) seats.push(game.players[0]);
+  const seatPositions = [[], [1], [2, 3], [2, 1, 3], [2, 4, 5, 3], [2, 4, 1, 5, 3]][Math.min(seats.length, 5)];
   document.querySelector('#seats').innerHTML = seats.slice(0, 5).map((player, index) => `
-    <div class="seat pos-${index + 1} ${player.id === game.turnId ? 'turn' : ''} ${player.connected ? '' : 'offline'}">
-      <span class="mini-avatar" style="background:${tintOf(player.name)}">${esc(initials(player.name))}</span>
+    <div class="seat pos-${seatPositions[index]} ${player.id === game.turnId ? 'turn' : ''} ${player.connected ? '' : 'offline'}">
+      ${avatarHTML(player)}
       <strong>${esc(player.name)}</strong>
       <span class="seat-cards">${player.finished ? 'вышел' : player.cards ? `<span class="opponent-hand">${Array.from({ length: Math.min(player.cards, 10) }, () => cardBackHTML()).join('')}</span><small>${player.cards} карт</small>` : 'нет карт'}</span>
       ${!player.finished && player.role === 'attacker' ? '<span class="seat-role attacker">атакует</span>' : ''}
@@ -950,6 +1045,7 @@ function renderGame() {
 
 function fitTable() {
   const row = document.querySelector('#tableCards');
+  const message = document.querySelector('#tableMessage');
   if (!row) return;
   const zoom = row.style.getPropertyValue('zoom');
   const apply = (property, value) => {
@@ -957,6 +1053,7 @@ function fitTable() {
   };
   if (!row.querySelector('.pair') || !row.parentElement) {
     apply('zoom', '');
+    if (message) message.style.removeProperty('--message-bottom');
     return;
   }
   const content = row.scrollWidth;
@@ -966,6 +1063,15 @@ function fitTable() {
   const scale = room / content;
   const next = scale < .98 ? Math.max(.7, scale).toFixed(3) : '';
   if (next !== zoom) row.style.setProperty('zoom', next);
+  if (message) {
+    const tableBox = row.parentElement.getBoundingClientRect();
+    const cardsBox = row.getBoundingClientRect();
+    const hand = row.parentElement.querySelector('.my-hand');
+    const handTop = hand ? hand.getBoundingClientRect().top : tableBox.bottom;
+    const gap = 18;
+    const bottom = Math.max(tableBox.bottom - cardsBox.bottom + gap, tableBox.bottom - handTop + gap);
+    message.style.setProperty('--message-bottom', `${Math.max(34, Math.round(bottom))}px`);
+  }
 }
 
 function fitHand() {
@@ -995,6 +1101,11 @@ function fitHand() {
   apply('--overlap', `${overlap}px`);
   apply('zoom', zoom < .999 ? zoom.toFixed(3) : '');
 }
+
+window.addEventListener('resize', () => {
+  fitHand();
+  fitTable();
+});
 
 function renderActions(game) {
   const actions = document.querySelector('#gameActions');
@@ -1236,12 +1347,18 @@ function startAmbient() {
 }
 
 /* start */
-startAmbient();
-renderMasthead();
-setInterval(renderMasthead, 30000);
-renderLobby();
-connect();
-
-const params = new URLSearchParams(location.search);
-const inviteCode = params.get('code');
-if (inviteCode) openJoinModal(inviteCode.toUpperCase());
+async function bootstrap() {
+  startAmbient();
+  renderMasthead();
+  setInterval(renderMasthead, 30000);
+  renderLobby();
+  if (await completeDiscordLogin()) return;
+  await prepareDiscordLogin();
+  if (!clientId || !sessionToken) return;
+  document.querySelector('#loginScreen').hidden = true;
+  document.querySelector('#appShell').hidden = false;
+  connect();
+  const inviteCode = inviteCodeFromUrl(new URL(location.href));
+  if (inviteCode) openJoinModal(inviteCode.toUpperCase());
+}
+bootstrap();

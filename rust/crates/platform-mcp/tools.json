@@ -1,7 +1,7 @@
 [
   {
     "name": "durak_connect",
-    "description": "Открыть место игрока: подключает SSE-канал к сервису (id + 64-символьный токен сессии), без которого сервер не принимает ходы. Возвращает место, аккаунт и лобби.",
+    "description": "Открыть SSE для сессии Discord из DURAK_DISCORD_CLIENT_ID и DURAK_DISCORD_TOKEN или DURAK_DISCORD_ACCOUNTS.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -391,7 +391,7 @@
   },
   {
     "name": "durak_autoplay",
-    "description": "Проверка сервиса целиком: открывает N мест, создаёт стол, играет партию простой стратегией и возвращает итог. Места закрываются, если keepSeats не задан.",
+    "description": "Играет партию с отдельными сессиями auto1...autoN из DURAK_DISCORD_ACCOUNTS.",
     "inputSchema": {
       "type": "object",
       "properties": {

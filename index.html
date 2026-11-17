@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#080d0a">
   <meta name="description" content="Дурак онлайн для своей компании. Создайте стол, отправьте друзьям код и сыграйте в подкидного или переводного.">
-  <title>Дурак Онлайн · Карточный клуб</title>
-  <link rel="stylesheet" href="style.css?v=54">
+  <title>Дурак Онлайн · BomzhClub</title>
+  <link rel="stylesheet" href="style.css?v=57">
 </head>
 <body>
   <div class="ambient" aria-hidden="true">
@@ -17,10 +17,19 @@
     <div class="ambient-frost"></div>
     <div class="ambient-haze"></div>
   </div>
+  <main class="login-screen" id="loginScreen" aria-labelledby="loginTitle">
+    <section class="login-panel">
+      <p class="login-brand"><span aria-hidden="true">♠</span> BOMZHCLUB · КАРТОЧНЫЙ КЛУБ</p>
+      <h1 id="loginTitle">Карты ждут<br><em>свою компанию.</em></h1>
+      <p class="login-copy">Войдите через Discord, чтобы играть с друзьями и сохранить свой профиль.</p>
+      <button class="primary-btn discord-login" id="discordLogin" disabled aria-describedby="discordStatus">Вход через Discord</button>
+      <p class="discord-status" id="discordStatus" role="status" aria-live="polite">Проверяем доступность входа…</p>
+    </section>
+  </main>
   <a class="skip-link" href="#main">Перейти к содержимому</a>
-  <div class="app-shell" id="appShell">
+  <div class="app-shell" id="appShell" hidden>
     <aside class="sidebar" aria-label="Карточный клуб">
-      <div class="brand"><span class="brand-mark" aria-hidden="true">♠</span><span>Дурак<em>КАРТОЧНЫЙ КЛУБ</em></span></div>
+      <div class="brand"><span class="brand-mark" aria-hidden="true">♠</span><span>BomzhClub<em>КАРТОЧНЫЙ КЛУБ</em></span></div>
       <button class="profile" id="profileBtn" aria-label="Изменить профиль">
         <span class="avatar" id="profileAvatar">И</span>
         <span class="profile-info"><strong id="profileName">Игрок</strong><small id="profileBalance">0 фишек</small></span>
@@ -53,7 +62,7 @@
             <h2 id="heroTitle">Карты на стол.<br><em>Друзей за стол.</em></h2>
             <p>Любимая игра, где бы вы ни были.<br>Создайте стол и пригласите своих.</p>
             <button class="hero-btn" id="heroCreateBtn">Собрать компанию <span aria-hidden="true">↗</span></button>
-            <div class="hero-footer"><span>2–6 игроков</span><span>36 или 52 карты</span><span>Без регистрации</span></div>
+            <div class="hero-footer"><span>2–6 игроков</span><span>36 или 52 карты</span><span>Вход через Discord</span></div>
           </div>
           <div class="hero-cards" aria-hidden="true">
             <div class="playing-card dark-card c1"><span class="hero-card-rank">Т<small>♣</small></span><span class="hero-card-suit">♣</span><span class="hero-card-bottom">Т<small>♣</small></span></div>
@@ -66,7 +75,7 @@
         </section>
         <div class="ornament" aria-hidden="true"><i></i><span>♠</span><i></i><span>♥</span><i></i><span>♦</span><i></i><span>♣</span><i></i></div>
         <section class="section-head" aria-labelledby="openGamesTitle">
-          <div><p class="eyebrow">НАЙДИТЕ СВОЮ КОМПАНИЮ</p><h2 id="openGamesTitle">Открытые столы <span id="roomCount"></span></h2><p class="connection-status" id="connectionStatus" role="status">Соединяемся с клубом…</p></div>
+          <div><p class="eyebrow">НАЙДИТЕ СВОЮ КОМПАНИЮ</p><h2 id="openGamesTitle">Открытые столы <span id="roomCount"></span></h2><p class="connection-status" id="connectionStatus" role="status">Соединяемся с клубом…</p><button class="ghost-btn" id="retryConnection" hidden>Повторить подключение</button></div>
         </section>
         <div class="lobby-console">
           <div class="filter" id="lobbyFilter" role="group" aria-label="Режим игры">
@@ -95,12 +104,12 @@
           <button class="ghost-btn" id="gameRules">Правила игры</button>
         </header>
         <div class="table">
-          <div class="table-emblem" aria-hidden="true"><span>♠</span><small>ДУРАК · КЛУБ</small></div>
+          <div class="table-emblem" aria-hidden="true"><span>♠</span><small>BOMZHCLUB</small></div>
           <div class="seats" id="seats"></div>
           <div class="deck" id="deckBox">
             <div class="deck-stack">
-              <div class="deck-trump" id="trumpCard"><small>Козырь</small></div>
-              <div class="deck-back" aria-hidden="true"><i>♠</i></div>
+              <div class="deck-trump" id="trumpCard"></div>
+              <div class="deck-back"><i id="trumpSuit" aria-label="Козырь"></i></div>
             </div>
             <div class="deck-count"><span id="deckCount">0</span> в колоде</div>
           </div>
@@ -120,6 +129,6 @@
     </div>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
-  <script src="app.js?v=33"></script>
+  <script src="app.js?v=37"></script>
 </body>
 </html>

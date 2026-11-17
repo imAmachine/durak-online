@@ -40,17 +40,12 @@ fn client() -> Client {
         .build()
         .unwrap()
 }
-fn rand_hex() -> String {
-    let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).expect("secure randomness unavailable");
-    bytes.iter().map(|x| format!("{:02x}", x)).collect()
-}
 fn body(path: &str, data: &Value) -> Result<Value, String> {
     let r = client()
         .post(format!("{}{}", base(), path))
         .json(data)
         .send()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.without_url().to_string())?;
     let status = r.status();
     let v: Result<Value, _> = r.json();
     let v = v.map_err(|e| e.to_string())?;
@@ -105,8 +100,8 @@ fn start_sse(seat: Arc<Mutex<Seat>>) {
         let u = format!(
             "{}/events?id={}&token={}&name={}",
             base(),
-            id,
-            token,
+            urlencoding(&id),
+            urlencoding(&token),
             urlencoding(&name)
         );
         match Client::builder()
@@ -148,7 +143,7 @@ fn start_sse(seat: Arc<Mutex<Seat>>) {
                 seat.lock().unwrap().streaming = false
             }
             Ok(r) => seat.lock().unwrap().last_error = Some(format!("SSE HTTP {}", r.status())),
-            Err(e) => seat.lock().unwrap().last_error = Some(e.to_string()),
+            Err(e) => seat.lock().unwrap().last_error = Some(e.without_url().to_string()),
         }
         if !seat.lock().unwrap().streaming {
             thread::sleep(Duration::from_millis(500));
@@ -184,11 +179,15 @@ fn connect(a: &Value) -> Result<Value, String> {
         .chars()
         .take(20)
         .collect::<String>();
+    let accounts: Value = serde_json::from_str(&env::var("DURAK_DISCORD_ACCOUNTS").unwrap_or_default()).unwrap_or(Value::Null);
+    let selected = accounts.as_object().and_then(|v| v.get(&label));
+    let id = selected.and_then(|v| v["clientId"].as_str()).map(str::to_owned).or_else(|| env::var("DURAK_DISCORD_CLIENT_ID").ok()).filter(|v| !v.trim().is_empty()).ok_or("Укажите DURAK_DISCORD_CLIENT_ID и DURAK_DISCORD_TOKEN или сессию места в DURAK_DISCORD_ACCOUNTS")?;
+    let token = selected.and_then(|v| v["token"].as_str()).map(str::to_owned).or_else(|| env::var("DURAK_DISCORD_TOKEN").ok()).filter(|v| !v.trim().is_empty()).ok_or("Укажите DURAK_DISCORD_CLIENT_ID и DURAK_DISCORD_TOKEN или сессию места в DURAK_DISCORD_ACCOUNTS")?;
     let seat = Arc::new(Mutex::new(Seat {
         label: label.clone(),
         name,
-        id: rand_hex(),
-        token: rand_hex(),
+        id,
+        token,
         ..Default::default()
     }));
     {
@@ -222,8 +221,8 @@ fn wait_watch(seat: &Arc<Mutex<Seat>>, until: &str, timeout: u64) -> Result<Valu
     let u = format!(
         "{}/api/watch?id={}&token={}&since={}&until={}&timeout={}",
         base(),
-        id,
-        token,
+        urlencoding(&id),
+        urlencoding(&token),
         since,
         urlencoding(until),
         timeout
@@ -231,7 +230,7 @@ fn wait_watch(seat: &Arc<Mutex<Seat>>, until: &str, timeout: u64) -> Result<Valu
     let v = client()
         .get(u)
         .send()
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.without_url().to_string())?
         .json::<Value>()
         .map_err(|e| e.to_string())?;
     if v["state"].is_object() {
@@ -370,7 +369,7 @@ fn my_move(st: &Value) -> Option<Value> {
     }
     let mine = &st["you"]["id"];
     if st["takePending"] == true {
-        return if &st["attackerId"] == mine && st["canPass"] == true {
+        return if st["canPass"] == true {
             Some(json!({"action":"pass"}))
         } else {
             None
@@ -392,9 +391,6 @@ fn my_move(st: &Value) -> Option<Value> {
         } else {
             None
         };
-    }
-    if &st["attackerId"] != mine {
-        return None;
     }
     attacks.sort_by_key(|c| (c["suit"] == st["trump"], rank(c)));
     if let Some(c) = attacks.first() {
@@ -466,13 +462,13 @@ fn wait_watch_since(
     let url = format!(
         "{}/api/watch?id={}&token={}&since={}&until={}&timeout={}",
         base(),
-        id,
-        token,
+        urlencoding(&id),
+        urlencoding(&token),
         since,
         urlencoding(until),
         timeout
     );
-    let r = client().get(url).send().map_err(|e| e.to_string())?;
+    let r = client().get(url).send().map_err(|e| e.without_url().to_string())?;
     let status = r.status();
     let v: Value = r.json().map_err(|e| e.to_string())?;
     if !status.is_success() {
@@ -504,16 +500,26 @@ impl Drop for AutoCleanup {
 }
 fn autoplay(a: &Value) -> Result<Value, String> {
     let count = a["seats"].as_u64().unwrap_or(2).clamp(2, 6);
+    let credentials: Value = serde_json::from_str(&env::var("DURAK_DISCORD_ACCOUNTS").unwrap_or_default()).unwrap_or(Value::Null);
+    let accounts = credentials.as_object().ok_or("Для autoplay нужны отдельные сессии auto1...autoN в DURAK_DISCORD_ACCOUNTS")?;
+    let mut ids = std::collections::HashSet::new();
+    let mut tokens = std::collections::HashSet::new();
+    for i in 1..=count {
+        let account = accounts.get(&format!("auto{}", i)).ok_or("Для autoplay нужны отдельные сессии auto1...autoN в DURAK_DISCORD_ACCOUNTS")?;
+        let id = account["clientId"].as_str().unwrap_or("");
+        let token = account["token"].as_str().unwrap_or("");
+        if id.trim().is_empty() || token.trim().is_empty() || !ids.insert(id.to_string()) || !tokens.insert(token.to_string()) {
+            return Err("Для autoplay нужны отдельные сессии auto1...autoN в DURAK_DISCORD_ACCOUNTS".into());
+        }
+    }
     let max = a["maxSteps"].as_u64().unwrap_or(300).clamp(10, 2000);
     let mut cleanup = AutoCleanup {
         labels: Vec::new(),
         keep: a["keepSeats"] == true,
     };
     for i in 1..=count {
-        let mut label = format!("auto{}", i);
-        while seats().lock().unwrap().contains_key(&label) {
-            label = format!("auto{}_{}", i, &rand_hex()[..8]);
-        }
+        let label = format!("auto{}", i);
+        if seats().lock().unwrap().contains_key(&label) { return Err("Место autoplay уже открыто".into()); }
         let name = format!(
             "{} {}",
             a["name"]
@@ -853,11 +859,22 @@ mod tests {
             -32601
         );
     }
+
+}
+
+#[cfg(test)]
+mod follow_tests {
+    use super::*;
+
     #[test]
-    fn random_credentials() {
-        let a = rand_hex();
-        let b = rand_hex();
-        assert_eq!(a.len(), 64);
-        assert_ne!(a, b);
+    fn follows_permissions_for_other_attackers() {
+        let mut state = json!({"room":{"status":"playing"},"you":{"id":"c","finished":false,"left":false},"attackerId":"a","defenderId":"b","takePending":false,"table":[{"attack":{"id":"6♠","rank":"6","suit":"♠"},"defense":{"id":"7♠","rank":"7","suit":"♠"}}],"hand":[{"id":"6♥","rank":"6","suit":"♥"}],"trump":"♣","canAttack":true,"canDefend":false,"canPass":true});
+        assert_eq!(my_move(&state).unwrap()["action"], "attack");
+        state["canAttack"] = json!(false);
+        assert_eq!(my_move(&state).unwrap()["action"], "pass");
+        state["takePending"] = json!(true);
+        assert_eq!(my_move(&state).unwrap()["action"], "pass");
+        state["canPass"] = json!(false);
+        assert!(my_move(&state).is_none());
     }
 }

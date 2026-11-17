@@ -158,6 +158,9 @@ dependencies = [
 [[package]]
 name = "durak-engine"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "errno"
@@ -627,9 +630,12 @@ name = "platform-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "durak-engine",
  "futures-core",
  "getrandom 0.2.17",
+ "reqwest",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",
@@ -637,6 +643,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tower",
+ "url",
 ]
 
 [[package]]

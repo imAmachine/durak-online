@@ -30,7 +30,7 @@ impl EventHub {
     pub async fn publish(&self, room_id: impl Into<String>, payload: Value) -> EventRecord {
         let mut rooms = self.rooms.write().await;
         let room = rooms.entry(room_id.into()).or_default();
-        room.seq += 1;
+        room.seq = payload.get("seq").and_then(Value::as_u64).filter(|seq| *seq > room.seq).unwrap_or(room.seq + 1);
         let record = EventRecord { seq: room.seq, payload };
         room.events.push(record.clone());
         if room.events.len() > 40 { room.events.remove(0); }

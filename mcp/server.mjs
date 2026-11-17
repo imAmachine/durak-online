@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import http from 'node:http';
-import crypto from 'node:crypto';
 import readline from 'node:readline';
 
 const SERVER_NAME = 'durak';
@@ -42,8 +41,8 @@ class Seat {
   constructor({ label, name, id, token }) {
     this.label = label;
     this.playerName = name;
-    this.id = id || crypto.randomBytes(32).toString('hex');
-    this.token = token || crypto.randomBytes(32).toString('hex');
+    this.id = id;
+    this.token = token;
     this.wantOpen = false;
     this.streaming = false;
     this.req = null;
@@ -626,12 +625,14 @@ const verboseArg = { type: 'boolean', description: 'Полный JSON-снимо
 const TOOLS = [
   {
     name: 'durak_connect',
-    description: 'Открыть место игрока: подключает SSE-канал к сервису (id + 64-символьный токен сессии), без которого сервер не принимает ходы. Возвращает место, аккаунт и лобби.',
+    description: 'Открыть SSE для существующей авторизованной сессии Discord.',
     inputSchema: {
       type: 'object',
       properties: {
         seat: { type: 'string', description: 'Метка места, по умолчанию pN.' },
         name: { type: 'string', description: 'Имя игрока (до 20 символов).' },
+        clientId: { type: 'string', description: 'ID авторизованной сессии Discord; либо DURAK_CLIENT_ID.' },
+        token: { type: 'string', description: 'Токен сессии; либо DURAK_TOKEN.' },
       },
     },
   },
@@ -787,11 +788,12 @@ const TOOLS = [
   },
   {
     name: 'durak_autoplay',
-    description: 'Проверка сервиса целиком: открывает N мест, создаёт стол, играет партию простой стратегией и возвращает итог. Места закрываются, если keepSeats не задан.',
+    description: 'Играет партию с отдельной авторизованной сессией Discord для каждого игрока.',
     inputSchema: {
       type: 'object',
       properties: {
         seats: { type: 'integer', description: 'Количество мест, от 2 до 6.' },
+        credentials: { type: 'array', description: 'Отдельные авторизованные сессии Discord для каждого игрока; либо JSON в DURAK_ACCOUNTS.', items: { type: 'object', properties: { clientId: { type: 'string' }, token: { type: 'string' } }, required: ['clientId', 'token'] } },
         mode: { type: 'string', enum: ['classic', 'transfer'], description: 'Режим партии.' },
         deckSize: { type: 'integer', enum: [36, 52], description: 'Размер колоды.' },
         bet: { type: 'integer', enum: BETS, description: 'Ставка в фишках.' },
@@ -808,7 +810,10 @@ async function connectSeat(args) {
   if (seats.has(label)) throw new Error(`Место «${label}» уже открыто`);
   if (seats.size >= 12) throw new Error('Слишком много открытых мест (12): закройте лишние через durak_disconnect');
   const name = String(args.name || `MCP ${label}`).slice(0, 20);
-  const seat = new Seat({ label, name });
+  const id = args.clientId ?? process.env.DURAK_CLIENT_ID;
+  const token = args.token ?? process.env.DURAK_TOKEN;
+  if (typeof id !== 'string' || !id.trim() || typeof token !== 'string' || !token.trim()) throw new Error('Укажите clientId и token авторизованной сессии Discord или DURAK_CLIENT_ID и DURAK_TOKEN');
+  const seat = new Seat({ label, name, id, token });
   seats.set(label, seat);
   try {
     await seat.open();
@@ -959,7 +964,7 @@ function myMove(seat, state) {
   if (state.room.status !== 'playing') return null;
   const mine = state.you.id;
   if (state.takePending) {
-    if (state.attackerId === mine && state.canPass) return { action: 'pass', note: 'бито, защитник забирает карты' };
+    if (state.canPass) return { action: 'pass', note: 'бито, защитник забирает карты' };
     return null;
   }
   const unbeaten = state.table.filter(row => !row.defense).length;
@@ -977,7 +982,6 @@ function myMove(seat, state) {
     if (state.canTake) return { action: 'take', note: `беру ${unbeaten} карт(ы)` };
     return null;
   }
-  if (state.attackerId !== mine) return null;
   if (state.canAttack) {
     const cards = attachOptions(state);
     if (cards.length && state.table.length < MAX_TABLE_CARDS) {
@@ -1180,6 +1184,9 @@ function logStep(log, seat, action, detail) {
 
 async function autoplay(args) {
   const count = Math.max(2, Math.min(MAX_PLAYERS, Number(args.seats) || 2));
+  let credentials;
+  try { credentials = args.credentials ?? JSON.parse(process.env.DURAK_ACCOUNTS || 'null'); } catch { throw new Error('DURAK_ACCOUNTS должен содержать JSON-массив сессий'); }
+  if (!Array.isArray(credentials) || credentials.length < count || credentials.slice(0, count).some(c => !c || typeof c.clientId !== 'string' || !c.clientId.trim() || typeof c.token !== 'string' || !c.token.trim()) || new Set(credentials.slice(0, count).map(c => c.clientId)).size !== count || new Set(credentials.slice(0, count).map(c => c.token)).size !== count) throw new Error('Для autoplay нужны отдельные авторизованные сессии Discord: credentials или DURAK_ACCOUNTS');
   const maxSteps = Math.max(10, Math.min(2000, Number(args.maxSteps) || 300));
   const bet = BETS.includes(Number(args.bet)) ? Number(args.bet) : 0;
   const mode = args.mode === 'transfer' ? 'transfer' : 'classic';
@@ -1191,7 +1198,7 @@ async function autoplay(args) {
     for (let index = 0; index < count; index += 1) {
       let label = `auto${index + 1}`;
       if (seats.has(label)) label = `${label}_${Date.now() % 1000}`;
-      const seat = new Seat({ label, name: `${base} ${index + 1}`.slice(0, 20) });
+      const seat = new Seat({ label, name: `${base} ${index + 1}`.slice(0, 20), id: credentials[index].clientId, token: credentials[index].token });
       seats.set(label, seat);
       created.push(seat);
       await seat.open();
@@ -1290,8 +1297,8 @@ async function botStep(created, baseline, steps, log) {
   const beatableRows = snapshot.table.filter(row => !row.defense);
 
   if (snapshot.takePending) {
-    const attackerSeat = seatById(snapshot.attackerId);
-    if (attackerSeat?.game?.canPass) {
+    const attackerSeat = created.find(seat => seat.game?.canPass);
+    if (attackerSeat) {
       await actAndWait(attackerSeat, 'pass');
       logStep(log, attackerSeat, 'pass', 'забрать карты');
       return true;
@@ -1318,7 +1325,8 @@ async function botStep(created, baseline, steps, log) {
     return false;
   }
 
-  const attackerSeat = seatById(snapshot.attackerId);
+  const attackerSeat = created.find(seat => seat.id === snapshot.turnId && (seat.game?.canAttack || seat.game?.canPass))
+    || created.find(seat => seat.game?.canPass || (seat.id === snapshot.attackerId && seat.game?.canAttack));
   const attackerState = attackerSeat?.game;
   if (!attackerState) return false;
   if (attackerState.canAttack) {
