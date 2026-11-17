@@ -1,0 +1,444 @@
+[
+  {
+    "name": "durak_connect",
+    "description": "Открыть место игрока: подключает SSE-канал к сервису (id + 64-символьный токен сессии), без которого сервер не принимает ходы. Возвращает место, аккаунт и лобби.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string",
+          "description": "Метка места, по умолчанию pN."
+        },
+        "name": {
+          "type": "string",
+          "description": "Имя игрока (до 20 символов)."
+        }
+      }
+    }
+  },
+  {
+    "name": "durak_disconnect",
+    "description": "Закрыть место игрока. leave=true дополнительно выходит из стола (во время партии это засчитывает поражение).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string",
+          "description": "Метка места из durak_connect (например p1). Можно не указывать, если место одно."
+        },
+        "leave": {
+          "type": "boolean",
+          "description": "Выйти из стола перед закрытием."
+        }
+      }
+    }
+  },
+  {
+    "name": "durak_seats",
+    "description": "Список открытых мест: аккаунт, стол, статус и последняя ошибка потока.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "durak_lobby",
+    "description": "Лобби: онлайн, открытые столы, история последних партий (открытые столы из потока места, иначе из /api/status).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string",
+          "description": "Место, из чьего потока брать лобби (необязательно)."
+        }
+      }
+    }
+  },
+  {
+    "name": "durak_room_create",
+    "description": "Создать стол. Создатель становится хостом и первым игроком.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string",
+          "description": "Метка места из durak_connect (например p1). Можно не указывать, если место одно."
+        },
+        "name": {
+          "type": "string",
+          "description": "Название стола (до 40 символов)."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "classic",
+            "transfer"
+          ],
+          "description": "classic — подкидной, transfer — переводной."
+        },
+        "deckSize": {
+          "type": "integer",
+          "enum": [
+            36,
+            52
+          ],
+          "description": "Размер колоды."
+        },
+        "bet": {
+          "type": "integer",
+          "enum": [
+            0,
+            50,
+            100,
+            250,
+            500
+          ],
+          "description": "Ставка в фишках (0, 50, 100, 250, 500)."
+        }
+      }
+    }
+  },
+  {
+    "name": "durak_room_join",
+    "description": "Войти в стол по шестисимвольному коду.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string",
+          "description": "Метка места из durak_connect (например p1). Можно не указывать, если место одно."
+        },
+        "code": {
+          "type": "string",
+          "description": "Код стола, например A1B2C3."
+        }
+      },
+      "required": [
+        "code"
+      ]
+    }
+  },
+  {
+    "name": "durak_room_leave",
+    "description": "Покинуть стол, оставаясь на месте.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string",
+          "description": "Метка места из durak_connect (например p1). Можно не указывать, если место одно."
+        }
+      }
+    }
+  },
+  {
+    "name": "durak_start",
+    "description": "Начать партию. Доступно хосту, когда подключены минимум два игрока.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string",
+          "description": "Метка места из durak_connect (например p1). Можно не указывать, если место одно."
+        }
+      }
+    }
+  },
+  {
+    "name": "durak_action",
+    "description": "Игровое действие: attack (cardId), defend (cardId, targetCardId), transfer (cardId), take, pass.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string",
+          "description": "Метка места из durak_connect (например p1). Можно не указывать, если место одно."
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "attack",
+            "defend",
+            "transfer",
+            "take",
+            "pass"
+          ]
+        },
+        "cardId": {
+          "type": "string",
+          "description": "Своя карта, например \"6♠\" или \"Т♥\"."
+        },
+        "targetCardId": {
+          "type": "string",
+          "description": "Атакующая карта на столе для defend."
+        },
+        "verbose": {
+          "type": "boolean",
+          "description": "Полный JSON-снимок в ответе (по умолчанию краткий отчёт)."
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "durak_state",
+    "description": "Текущее состояние стола для места: рука, стол, козырь, роли, флаги действий.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string",
+          "description": "Метка места из durak_connect (например p1). Можно не указывать, если место одно."
+        },
+        "verbose": {
+          "type": "boolean",
+          "description": "Полный JSON-снимок в ответе (по умолчанию краткий отчёт)."
+        }
+      }
+    }
+  },
+  {
+    "name": "durak_wait",
+    "description": "Дождаться события через серверный хук /api/watch: any (любое), game (новый снимок), your-turn (есть ход), opponent (сходил соперник), finished (партия окончена). Возвращает журнал действий и снимок стола.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string",
+          "description": "Метка места из durak_connect (например p1). Можно не указывать, если место одно."
+        },
+        "until": {
+          "type": "string",
+          "enum": [
+            "any",
+            "game",
+            "your-turn",
+            "opponent",
+            "finished"
+          ],
+          "description": "Условие ожидания."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "description": "Общий таймаут в миллисекундах (по умолчанию 5000, максимум 120000)."
+        },
+        "verbose": {
+          "type": "boolean",
+          "description": "Полный JSON-снимок в ответе (по умолчанию краткий отчёт)."
+        }
+      }
+    }
+  },
+  {
+    "name": "durak_watch",
+    "description": "Ждать действие сервера: long-poll /api/watch до своего хода (по умолчанию), хода соперника или конца партии. Возвращает, кто что сыграл, подсказки и снимок стола; ждёт до totalMs даже без сообщений в чате.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string",
+          "description": "Метка места из durak_connect (например p1). Можно не указывать, если место одно."
+        },
+        "until": {
+          "type": "string",
+          "enum": [
+            "any",
+            "game",
+            "your-turn",
+            "opponent",
+            "finished"
+          ],
+          "description": "any — любое действие, game — новый снимок, your-turn — ваш ход, opponent — сходил соперник, finished — партия окончена."
+        },
+        "totalMs": {
+          "type": "integer",
+          "description": "Общее ожидание в мс (по умолчанию 180000, максимум 600000)."
+        },
+        "chunkMs": {
+          "type": "integer",
+          "description": "Длина одного long-poll запроса в мс (по умолчанию 25000, максимум 60000)."
+        },
+        "verbose": {
+          "type": "boolean",
+          "description": "Полный JSON-снимок в ответе (по умолчанию краткий отчёт)."
+        }
+      }
+    }
+  },
+  {
+    "name": "durak_follow",
+    "description": "Играть своим местом до конца партии без вмешательства человека: сам решает defend/attack/take/pass, ждёт ход через серверный хук и возвращает один краткий отчёт со всеми ходами.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string",
+          "description": "Метка места из durak_connect (например p1). Можно не указывать, если место одно."
+        },
+        "until": {
+          "type": "string",
+          "enum": [
+            "finished",
+            "turn"
+          ],
+          "description": "finished — довести партию до конца, turn — остановиться, когда ход переходит сопернику."
+        },
+        "totalMs": {
+          "type": "integer",
+          "description": "Общий лимит времени в мс (по умолчанию 240000, максимум 900000)."
+        },
+        "maxSteps": {
+          "type": "integer",
+          "description": "Лимит собственных действий (по умолчанию 400)."
+        },
+        "verbose": {
+          "type": "boolean",
+          "description": "Полный JSON-снимок в ответе (по умолчанию краткий отчёт)."
+        }
+      }
+    }
+  },
+  {
+    "name": "durak_hints",
+    "description": "Легальные ходы по текущему снимку: чем можно атаковать, чем отбить каждую карту стола, варианты перевода.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string",
+          "description": "Метка места из durak_connect (например p1). Можно не указывать, если место одно."
+        }
+      }
+    }
+  },
+  {
+    "name": "durak_profile",
+    "description": "Переименовать игрока (имя до 20 символов).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string",
+          "description": "Метка места из durak_connect (например p1). Можно не указывать, если место одно."
+        },
+        "name": {
+          "type": "string",
+          "description": "Новое имя."
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  },
+  {
+    "name": "durak_admin",
+    "description": "Панель клуба: list, update, reset, balance. Ключ берётся из аргумента key, иначе из DURAK_ADMIN_KEY/ADMIN_KEY.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "type": "string",
+          "enum": [
+            "list",
+            "update",
+            "reset",
+            "balance"
+          ]
+        },
+        "key": {
+          "type": "string",
+          "description": "Ключ администратора."
+        },
+        "id": {
+          "type": "string",
+          "description": "clientId игрока для update/reset/balance."
+        },
+        "name": {
+          "type": "string"
+        },
+        "balance": {
+          "type": "integer"
+        },
+        "games": {
+          "type": "integer"
+        },
+        "wins": {
+          "type": "integer"
+        },
+        "losses": {
+          "type": "integer"
+        },
+        "delta": {
+          "type": "integer",
+          "description": "Пополнение для op=balance."
+        }
+      },
+      "required": [
+        "op"
+      ]
+    }
+  },
+  {
+    "name": "durak_status",
+    "description": "Служебный статус сервиса: онлайн, клиенты, столы (/api/status).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "durak_autoplay",
+    "description": "Проверка сервиса целиком: открывает N мест, создаёт стол, играет партию простой стратегией и возвращает итог. Места закрываются, если keepSeats не задан.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seats": {
+          "type": "integer",
+          "description": "Количество мест, от 2 до 6."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "classic",
+            "transfer"
+          ],
+          "description": "Режим партии."
+        },
+        "deckSize": {
+          "type": "integer",
+          "enum": [
+            36,
+            52
+          ],
+          "description": "Размер колоды."
+        },
+        "bet": {
+          "type": "integer",
+          "enum": [
+            0,
+            50,
+            100,
+            250,
+            500
+          ],
+          "description": "Ставка в фишках."
+        },
+        "name": {
+          "type": "string",
+          "description": "Базовое имя ботов."
+        },
+        "maxSteps": {
+          "type": "integer",
+          "description": "Лимит действий, по умолчанию 300."
+        },
+        "keepSeats": {
+          "type": "boolean",
+          "description": "Оставить места открытыми после партии."
+        }
+      }
+    }
+  }
+]

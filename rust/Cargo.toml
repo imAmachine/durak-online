@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/durak-engine", "crates/platform-api", "crates/platform-server"]
+members = ["crates/durak-engine", "crates/platform-api", "crates/platform-server", "crates/platform-mcp"]
 resolver = "2"
