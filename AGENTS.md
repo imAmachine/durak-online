@@ -179,6 +179,9 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
 - `transfer` exists only in `transfer` mode: the defender may play a card matching the
   single table rank while nothing is beaten, becoming the new attacker and pushing the
   defense to the next active player.
+- Attacking is not mode-gated: `act('attack')` allows the attacker to add rank-matching
+  cards in both modes, and after a transfer the new attacker may add cards too. Transfer
+  mode is therefore podkidnoy plus the transfer option, not a replacement for it.
 - Turn order is the array order of `room.players`; `nextActive()` skips finished players.
 - Limits: `MAX_PLAYERS = 6`, `MAX_TABLE_CARDS = 6`; player names truncated to 20 chars,
   room names to 40.
@@ -213,7 +216,7 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
   records a loss for the leaver, and normalizes roles; if fewer than two players remain the
   game ends immediately with the leaver as the loser (the survivor wins the pot).
 - **Asset cache busting is manual.** Script/style URLs in `index.html` carry `?v=N`
-  (`app.js?v=16`, `style.css?v=27`). Bump the matching version when changing those files, or
+  (`app.js?v=17`, `style.css?v=28`). Bump the matching version when changing those files, or
   browsers may serve stale assets (static files are served without cache headers).
 - **Russian everywhere.** UI copy, server messages, README, and test labels are Russian.
   New user-facing strings should be Russian.
