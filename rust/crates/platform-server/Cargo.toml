@@ -1,0 +1,9 @@
+[package]
+name = "platform-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.8"
+platform-api = { path = "../platform-api" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
