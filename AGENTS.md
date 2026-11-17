@@ -136,10 +136,11 @@ hover. Wallet and admin components (`.wallet`, `.admin-row`, `.bet-pill`, `.fini
 reuse the same tokens; the admin list is a scroll-free simple list, so long player lists can
 grow the modal which already scrolls.
 
-The lobby divider (`.ornament`) joins two gradient hairlines with four circular suit
-medallions: a hairline outer ring, a faint inner ring, and a brass-tinted fill. Spades and
-clubs are brass, hearts and diamonds use `--red`; sizes come from `clamp()` so the row stays
-on one line down to 320px. It is decorative and `aria-hidden`, keep it that way.
+The lobby divider (`.ornament`) is a strip of five fading hairline segments with four circular
+suit medallions between them: a hairline outer ring, a faint inner ring, and a brass-tinted
+fill. Spades and clubs are brass, hearts and diamonds use `--red`; sizes come from `clamp()`
+so the row stays on one line down to 320px. It is decorative and `aria-hidden`, keep it that
+way.
 
 The deck is a `.deck-stack` of card backs with the face-up trump card lying crosswise
 underneath and sticking out to the right; its content is padded left so it lands in the
@@ -212,7 +213,7 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
   records a loss for the leaver, and normalizes roles; if fewer than two players remain the
   game ends immediately with the leaver as the loser (the survivor wins the pot).
 - **Asset cache busting is manual.** Script/style URLs in `index.html` carry `?v=N`
-  (`app.js?v=16`, `style.css?v=25`). Bump the matching version when changing those files, or
+  (`app.js?v=16`, `style.css?v=27`). Bump the matching version when changing those files, or
   browsers may serve stale assets (static files are served without cache headers).
 - **Russian everywhere.** UI copy, server messages, README, and test labels are Russian.
   New user-facing strings should be Russian.

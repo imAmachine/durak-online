@@ -684,7 +684,7 @@ a { color: var(--brass); text-underline-offset: 3px; }
 .ornament {
   display: flex;
   align-items: center;
-  gap: clamp(16px, 2.4vw, 30px);
+  gap: clamp(7px, 1.4vw, 20px);
   margin: 0 0 clamp(34px, 4vw, 52px);
   color: var(--brass);
 }
@@ -692,28 +692,24 @@ a { color: var(--brass); text-underline-offset: 3px; }
 .ornament i {
   flex: 1;
   height: 1px;
-  background: linear-gradient(90deg, transparent, var(--line-strong) 62%, var(--brass));
+  background: linear-gradient(90deg, transparent, var(--line-strong), transparent);
 }
 
-.ornament i:last-child { background: linear-gradient(90deg, var(--brass), var(--line-strong) 38%, transparent); }
-
-.ornament-suits { display: flex; flex: 0 0 auto; align-items: center; gap: clamp(9px, 1.3vw, 16px); }
-
-.ornament-suits > span {
+.ornament span {
   position: relative;
   display: grid;
-  width: clamp(29px, 2.7vw, 35px);
-  height: clamp(29px, 2.7vw, 35px);
+  flex: 0 0 auto;
+  width: clamp(32px, 3.1vw, 43px);
+  height: clamp(32px, 3.1vw, 43px);
   place-items: center;
   border: 1px solid var(--line-strong);
   border-radius: 50%;
-  color: var(--brass);
   background: radial-gradient(circle at 50% 32%, var(--brass-soft), transparent 74%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07);
-  font: 500 clamp(15px, 1.4vw, 18px)/1 var(--font-display);
+  font: 500 clamp(16px, 1.55vw, 21px)/1 var(--font-display);
 }
 
-.ornament-suits > span::after {
+.ornament span::after {
   content: '';
   position: absolute;
   inset: 3px;
@@ -722,8 +718,8 @@ a { color: var(--brass); text-underline-offset: 3px; }
   pointer-events: none;
 }
 
-.ornament-suits > span:nth-child(2),
-.ornament-suits > span:nth-child(3) { color: var(--red); }
+.ornament span:nth-of-type(2),
+.ornament span:nth-of-type(3) { color: var(--red); }
 
 .section-head {
   display: flex;
