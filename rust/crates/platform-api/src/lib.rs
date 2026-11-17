@@ -26,7 +26,7 @@ use std::{
     task::{Context, Poll},
     time::Duration,
 };
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 
 type SseResult = Result<Event, Infallible>;
@@ -47,6 +47,18 @@ pub struct AppState {
     accounts: Arc<RwLock<HashMap<String, game::Account>>>,
     pub event_hub: events::EventHub,
     next_client_generation: Arc<AtomicU64>,
+    repository: Option<Arc<Mutex<storage::Repository>>>,
+    ready: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AppState {
+    pub fn with_repository(repository: storage::Repository) -> Self {
+        Self {
+            repository: Some(Arc::new(Mutex::new(repository))),
+            ready: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -104,6 +116,7 @@ pub fn router_with_state(state: AppState) -> Router {
     Router::new()
         .route("/events", get(events))
         .route("/api/status", get(status))
+        .route("/readyz", get(readyz))
         .route("/api/watch", get(game::watch))
         .route("/api/rooms", post(game::create))
         .route("/api/join", post(game::join))
@@ -191,6 +204,18 @@ async fn status(State(state): State<AppState>) -> impl IntoResponse {
     game::api_status(&state).await
 }
 
+async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
+    if state.repository.is_some() && state.ready.load(Ordering::Acquire) {
+        (StatusCode::OK, Json(json!({"ready": true}))).into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"ready": false})),
+        )
+            .into_response()
+    }
+}
+
 async fn route(uri: Uri) -> Response {
     let path = uri.path();
     if path.starts_with("/api/") {
@@ -230,7 +255,29 @@ fn error(status: StatusCode, message: &str) -> Response {
 mod tests {
     use super::*;
     use axum::{body::Body, http::Request, response::Response};
+    use tempfile::tempdir;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn readiness_requires_a_migrated_repository() {
+        let directory = tempdir().unwrap();
+        let repository = storage::Repository::open(
+            directory.path().join("durak.sqlite"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations"),
+        )
+        .unwrap();
+        let response: Response = router_with_state(AppState::with_repository(repository))
+            .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response: Response = router()
+            .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
 
     #[tokio::test]
     async fn invalid_events_credentials_are_rejected() {

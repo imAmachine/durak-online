@@ -174,6 +174,13 @@ money и full-game tests. Это необходимый compatibility gate, но
 4. Добавить restart recovery, cleanup jobs и migration tests.
 5. Скрыть legacy anonymous accounts за feature flag.
 
+Текущий bootstrap подключает SQLite к lifecycle `platform-server`: путь берётся из
+`DURAK_DB` (по умолчанию `data/durak.sqlite`), каталог создаётся при необходимости,
+при старте применяются `rust/migrations`, а `/readyz` отвечает `200` только после
+успешного открытия и миграции базы. Repository пока является готовым wiring для
+следующего шага; комнаты и аккаунты продолжают жить in-memory и не записываются в
+него, поэтому рестарт ещё не восстанавливает игровые сессии.
+
 Готово, когда restart не теряет завершённые партии, баланс и историю, повтор
 settlement не меняет результат, а failure-injection тесты покрывают сбой до commit,
 после commit и до публикации SSE.
