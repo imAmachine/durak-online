@@ -38,7 +38,7 @@ function shuffle(list) {
 }
 
 function syncTrumpCard(room) {
-  if (!room.deck.length) room.trumpCard = null;
+  room.trumpCard = room.deck[0] || null;
 }
 
 function findPlayer(room, id) {
