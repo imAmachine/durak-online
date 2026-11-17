@@ -541,9 +541,9 @@ a { color: var(--brass); text-underline-offset: 3px; }
   z-index: 3;
   top: 50%;
   right: -16px;
-  width: 430px;
-  height: 300px;
-  transform: translateY(-50%) scale(.8);
+  width: 460px;
+  height: 330px;
+  transform: translateY(-50%) scale(.84);
   transform-origin: 100% 50%;
   perspective: 1200px;
 }
@@ -561,10 +561,10 @@ a { color: var(--brass); text-underline-offset: 3px; }
 .hero-cards::after {
   content: '';
   position: absolute;
-  right: 18px;
-  bottom: -46px;
-  width: 380px;
-  height: 70px;
+  right: 12px;
+  bottom: -40px;
+  width: 412px;
+  height: 74px;
   border-radius: 50%;
   background: radial-gradient(closest-side, rgba(0, 0, 0, .55), transparent 75%);
   filter: blur(10px);
@@ -573,11 +573,11 @@ a { color: var(--brass); text-underline-offset: 3px; }
 
 .playing-card {
   position: absolute;
-  width: 168px;
-  height: 244px;
-  padding: 14px;
+  width: 192px;
+  height: 280px;
+  padding: 16px;
   border: 1px solid rgba(28, 32, 24, .35);
-  border-radius: 14px;
+  border-radius: 16px;
   color: #1b211a;
   background: linear-gradient(155deg, #fdfaf2 0%, #f6f0e2 58%, #e9dfcc 100%);
   box-shadow: 0 22px 45px rgba(0, 0, 0, .5), inset 0 0 0 1px rgba(255, 255, 255, .65);
@@ -589,18 +589,18 @@ a { color: var(--brass); text-underline-offset: 3px; }
 .playing-card::before {
   content: '';
   position: absolute;
-  inset: 7px;
+  inset: 8px;
   border: 1px solid rgba(28, 32, 24, .16);
-  border-radius: 9px;
+  border-radius: 10px;
   pointer-events: none;
 }
 
 .playing-card.red-card { color: #a8483d; }
 
-.c1 { left: 8px; top: 42px; transform: rotate(-17deg); }
-.c2 { left: 92px; top: 18px; transform: rotate(-6deg); }
-.c3 { left: 176px; top: 18px; transform: rotate(6deg); }
-.c4 { left: 254px; top: 42px; transform: rotate(17deg); }
+.c1 { left: 6px; top: 30px; transform: rotate(-17deg); }
+.c2 { left: 88px; top: 8px; transform: rotate(-6deg); }
+.c3 { left: 170px; top: 8px; transform: rotate(6deg); }
+.c4 { left: 252px; top: 30px; transform: rotate(17deg); }
 
 .hero-cards:hover .c1 { transform: translate(-10px, -4px) rotate(-22deg); }
 .hero-cards:hover .c2 { transform: translate(-3px, -10px) rotate(-8deg); }
@@ -608,34 +608,40 @@ a { color: var(--brass); text-underline-offset: 3px; }
 .hero-cards:hover .c4 { transform: translate(10px, -4px) rotate(22deg); }
 
 .hero-card-rank {
+  position: absolute;
+  top: 12px;
+  left: 14px;
   display: flex;
-  align-items: flex-start;
-  gap: 2px;
-  font: 500 30px/.9 var(--font-display);
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  font: 500 34px/.86 var(--font-display);
 }
 
-.hero-card-rank small { font-size: 16px; }
+.hero-card-rank small { font-size: 19px; line-height: 1; }
 
 .hero-card-suit {
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
-  font: 400 88px/1 var(--font-display);
+  font: 400 104px/1 var(--font-display);
   opacity: .88;
 }
 
 .hero-card-bottom {
   position: absolute;
-  right: 14px;
-  bottom: 12px;
+  right: 16px;
+  bottom: 14px;
   display: flex;
-  gap: 2px;
-  font: 500 30px/.9 var(--font-display);
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  font: 500 34px/.86 var(--font-display);
   transform: rotate(180deg);
 }
 
-.hero-card-bottom small { font-size: 16px; }
+.hero-card-bottom small { font-size: 19px; line-height: 1; }
 
 .hero-note {
   position: absolute;
@@ -1739,6 +1745,7 @@ a { color: var(--brass); text-underline-offset: 3px; }
 
 @media (max-width: 1180px) {
   .hero-copy { max-width: 58%; }
+  .hero-cards { transform: translateY(-50%) scale(.72); }
 }
 
 @media (max-width: 1180px) and (min-width: 961px) {
@@ -1820,7 +1827,7 @@ a { color: var(--brass); text-underline-offset: 3px; }
   .topbar h1 { font-size: 46px; }
   .top-actions { margin-top: 18px; gap: 7px; padding: 0; }
   .top-actions .ghost-btn, .top-actions .primary-btn { padding: 11px 13px; font-size: 10px; }
-  .hero-banner { min-height: 0; margin-top: 26px; padding: 34px 24px 230px; border-radius: 20px; }
+  .hero-banner { min-height: 0; margin-top: 26px; padding: 34px 24px 266px; border-radius: 20px; }
   .hero-copy { max-width: none; }
   .hero-copy h2 { font-size: clamp(44px, 12vw, 62px); }
   .hero-copy p { font-size: 13.5px; }
@@ -1888,7 +1895,7 @@ a { color: var(--brass); text-underline-offset: 3px; }
   .main-content { padding-inline: 14px; }
   .topbar h1 { font-size: 42px; }
   .top-actions .ghost-btn, .top-actions .primary-btn { padding: 10px 10px; font-size: 9.5px; letter-spacing: .03em; }
-  .hero-banner { padding: 30px 20px 220px; }
+  .hero-banner { padding: 30px 20px 252px; }
   .hero-copy h2 { font-size: 42px; }
   .hero-footer { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
   .hero-footer span + span::before { display: none; }

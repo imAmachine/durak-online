@@ -126,7 +126,10 @@ light mode and would become unreadable). Table geometry is hand-tuned: seats are
 Keep seats, deck, cards, message, and hand non-overlapping; the layout is verified from
 320px to 1600px, including the 961–1180px range where seats shrink via their own breakpoint
 and five opponents plus six pairs are the tightest case. On narrow screens the hero card fan
-moves into a bottom band, which relies on the extra bottom padding on `.hero-banner`.
+moves into a bottom band, which relies on the extra bottom padding on `.hero-banner` (it is
+sized so the fan and its `.hero-note` badge never cover the hero footer). The fan follows the
+table's corner convention, a rank with the suit centered under it and the pair mirrored in
+the opposite corner, and scales from .84 down to .48 across the breakpoints.
 
 The logo block (`.brand`) is locked against text selection and keeps the default cursor on
 hover. Wallet and admin components (`.wallet`, `.admin-row`, `.bet-pill`, `.finish-payout`)
@@ -204,7 +207,7 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
   records a loss for the leaver, and normalizes roles; if fewer than two players remain the
   game ends immediately with the leaver as the loser (the survivor wins the pot).
 - **Asset cache busting is manual.** Script/style URLs in `index.html` carry `?v=N`
-  (`app.js?v=16`, `style.css?v=18`). Bump the matching version when changing those files, or
+  (`app.js?v=16`, `style.css?v=23`). Bump the matching version when changing those files, or
   browsers may serve stale assets (static files are served without cache headers).
 - **Russian everywhere.** UI copy, server messages, README, and test labels are Russian.
   New user-facing strings should be Russian.
