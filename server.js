@@ -136,6 +136,10 @@ function createRoom({ name, mode, deckSize, bet, host }) {
     message: 'Ожидаем игроков. Отправьте друзьям код приглашения',
     finished: null,
     createdAt: Date.now(),
+    seq: 0,
+    events: [],
+    hooks: new Set(),
+    nextEvent: null,
   };
   rooms.set(id, room);
   return room;
@@ -402,6 +406,8 @@ function gameState(room, clientId) {
     canStart: Boolean(me && !me.left && room.hostId === me.id && room.status !== 'playing' && connected >= 2),
     payout: room.lastPayouts && me ? room.lastPayouts[me.id] || 0 : 0,
     finished: room.finished,
+    seq: room.seq || 0,
+    log: (room.events || []).slice(-8),
   };
 }
 
@@ -439,13 +445,67 @@ function broadcastLobby() {
   clients.forEach(client => send(client, payload));
 }
 
+function markEvent(room, actorId, action, data) {
+  room.nextEvent = {
+    actorId: actorId || null,
+    action: action || 'sync',
+    cardId: data && data.cardId ? String(data.cardId) : null,
+    targetCardId: data && data.targetCardId ? String(data.targetCardId) : null,
+  };
+}
+
+function recordEvent(room) {
+  const pending = room.nextEvent || { action: 'sync' };
+  const actor = pending.actorId ? findPlayer(room, pending.actorId) : null;
+  room.nextEvent = null;
+  room.seq = (room.seq || 0) + 1;
+  room.events.push({
+    seq: room.seq,
+    at: Date.now(),
+    action: pending.action,
+    actorId: pending.actorId || null,
+    actorName: actor ? actor.name : '',
+    cardId: pending.cardId || null,
+    targetCardId: pending.targetCardId || null,
+    status: room.status,
+    turnId: room.turnId || null,
+    attackerId: room.attackerId || null,
+    defenderId: room.defenderId || null,
+    message: room.message,
+  });
+  if (room.events.length > 40) room.events.shift();
+}
+
+const WATCH_MODES = ['any', 'game', 'your-turn', 'opponent', 'finished'];
+
+function matchesWatch(until, room, clientId, since = 0) {
+  if (until === 'your-turn') {
+    const state = gameState(room, clientId);
+    return Boolean(state.you && (state.canAttack || state.canDefend || state.canTransfer || state.canTake || state.canPass || state.canStart));
+  }
+  if (until === 'finished') return room.status === 'finished' || Boolean(gameState(room, clientId).finished);
+  if (until === 'opponent') {
+    return room.events.some(event => event.seq > since && event.actorId && event.actorId !== clientId);
+  }
+  return true;
+}
+
+function releaseHooks(room) {
+  if (!room.hooks || !room.hooks.size) return;
+  [...room.hooks].forEach(hook => {
+    try { hook(); } catch (error) { room.hooks.delete(hook); }
+  });
+}
+
 function broadcastRoom(room) {
+  recordEvent(room);
   room.players.forEach(player => {
     const client = clients.get(player.id);
     if (!client || client.roomId !== room.id || player.left) return;
     send(client, { type: 'game', state: gameState(room, player.id) });
   });
   broadcastLobby();
+  releaseHooks(room);
 }
 
 function leaveRoom(client) {
@@ -469,6 +529,7 @@ function leaveRoom(client) {
       if (host) room.hostId = host.id;
     }
     if (!player.finished) finishGame(room, player, `${player.name} покинул партию, игра окончена`);
+    markEvent(room, player.id, 'leave');
     broadcastRoom(room);
     return;
   }
@@ -480,15 +541,24 @@ function leaveRoom(client) {
   }
   if (room.hostId === client.id) room.hostId = room.players[0].id;
   room.message = `${player.name} покинул лобби`;
+  markEvent(room, player.id, 'leave');
   broadcastRoom(room);
 }
 
 function act(client, data) {
   const room = rooms.get(client.roomId);
+  const result = actInner(client, data);
+  if (result && result.error && room) room.nextEvent = null;
+  return result;
+}
+
+function actInner(client, data) {
+  const room = rooms.get(client.roomId);
   if (!room) return { error: 'Вы не находитесь в лобби' };
   const me = findPlayer(room, client.id);
   if (!me || me.left) return { error: 'Вы не участник этой игры' };
   const action = data.action;
+  markEvent(room, me.id, action, data);
 
   if (action === 'start') {
     if (room.status === 'playing') return { error: 'Партия уже идёт' };
@@ -683,6 +753,7 @@ const server = http.createServer(async (req, res) => {
         player.name = name;
         player.offlineAt = null;
       }
+      markEvent(room, id, 'connect');
       broadcastRoom(room);
     } else {
       send(client, { type: 'noroom' });
@@ -698,10 +769,56 @@ const server = http.createServer(async (req, res) => {
           player.connected = false;
           player.offlineAt = Date.now();
         }
+        markEvent(current, id, 'disconnect');
         broadcastRoom(current);
       }
       broadcastLobby();
     });
+    return;
+  }
+
+  if (url.pathname === '/api/watch') {
+    const id = url.searchParams.get('id');
+    const token = url.searchParams.get('token');
+    if (!id || !/^[a-f0-9]{64}$/.test(token || '')) return json(res, 400, { error: 'Нужны id и токен сессии' });
+    if (sessions.get(id) !== token) return json(res, 403, { error: 'Неверный токен сессии' });
+    const until = url.searchParams.get('until') || 'any';
+    if (!WATCH_MODES.includes(until)) return json(res, 400, { error: `until должен быть ${WATCH_MODES.join(', ')}` });
+    const since = Math.max(0, Number(url.searchParams.get('since')) || 0);
+    const timeout = Math.max(200, Math.min(60000, Number(url.searchParams.get('timeout')) || 20000));
+    const room = roomOfPlayer(id);
+    if (!room) return json(res, 200, { hit: false, until, since, seq: 0, roomId: null, events: [], state: null });
+    if (!room.hooks) room.hooks = new Set();
+    const payload = hit => ({
+      hit,
+      until,
+      since,
+      seq: room.seq,
+      roomId: room.id,
+      events: room.events.slice(-12),
+      state: gameState(room, id),
+    });
+    const ready = () => room.seq > since && matchesWatch(until, room, id, since);
+    if (ready()) return json(res, 200, payload(true));
+    let settled = false;
+    const stop = () => {
+      settled = true;
+      clearTimeout(timer);
+      room.hooks.delete(hook);
+    };
+    const hook = () => {
+      if (settled || !ready()) return;
+      stop();
+      if (!res.writableEnded) json(res, 200, payload(true));
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      stop();
+      if (!res.writableEnded) json(res, 200, payload(false));
+    }, timeout);
+    timer.unref();
+    room.hooks.add(hook);
+    req.on('close', stop);
     return;
   }
 
@@ -732,6 +849,7 @@ const server = http.createServer(async (req, res) => {
     const host = { id: client.id, name: client.name, hand: [], connected: true, finished: false };
     const room = createRoom({ name: body.name, mode: body.mode, deckSize: body.deckSize, bet: stake, host });
     client.roomId = room.id;
+    markEvent(room, client.id, 'create');
     broadcastRoom(room);
     return json(res, 201, { room: roomSummary(room), code: room.id, account: publicAccount(accountOf(client.id)) });
   }
@@ -760,6 +878,7 @@ const server = http.createServer(async (req, res) => {
       existing.offlineAt = null;
       existing.name = client.name;
       client.roomId = room.id;
+      markEvent(room, client.id, 'join');
       broadcastRoom(room);
       return json(res, 200, { room: roomSummary(room), account: publicAccount(accountOf(client.id)) });
     }
@@ -768,6 +887,7 @@ const server = http.createServer(async (req, res) => {
     room.players.push({ id: client.id, name: client.name, hand: [], connected: true, finished: false });
     client.roomId = room.id;
     room.message = 'Игроки готовы. Создатель лобби может начать игру';
+    markEvent(room, client.id, 'join');
     broadcastRoom(room);
     return json(res, 200, { room: roomSummary(room), account: publicAccount(accountOf(client.id)) });
   }
@@ -793,8 +913,10 @@ const server = http.createServer(async (req, res) => {
       if (player) player.name = name;
     });
     const room = rooms.get(client.roomId);
-    if (room) broadcastRoom(room);
-    else broadcastLobby();
+    if (room) {
+      markEvent(room, client.id, 'rename');
+      broadcastRoom(room);
+    } else broadcastLobby();
     return json(res, 200, { ok: true, name, account: publicAccount(accountOf(client.id)) });
   }
 
@@ -839,8 +961,10 @@ const server = http.createServer(async (req, res) => {
       if (body.losses !== undefined) account.losses = asCount(body.losses, account.losses);
       account.activeAt = Date.now();
       const room = roomOfPlayer(account.id);
-      if (room) broadcastRoom(room);
-      else broadcastLobby();
+      if (room) {
+        markEvent(room, account.id, 'admin');
+        broadcastRoom(room);
+      } else broadcastLobby();
       pushAccount(account.id);
       return json(res, 200, { ok: true, player: publicAccount(account) });
     }
@@ -872,6 +996,7 @@ const server = http.createServer(async (req, res) => {
     const client = clients.get(body.clientId);
     if (!client) return json(res, 200, { ok: true });
     leaveRoom(client);
+    send(client, { type: 'noroom' });
     broadcastLobby();
     return json(res, 200, { ok: true });
   }
@@ -911,6 +1036,7 @@ function cancelGame(room) {
   room.finishedAt = Date.now();
   room.finished = { loser: '—', loserId: null, cancelled: true };
   room.message = 'Партия отменена: игроки отключены. Ставки возвращены';
+  markEvent(room, null, 'cancel');
   broadcastRoom(room);
 }
 

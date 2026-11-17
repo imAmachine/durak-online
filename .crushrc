@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# MCP-сервер игры «Дурак»: подключение, игра и проверка сервиса через инструменты durak_*.
+# Перед работой запустите сервис: npm start (адрес берётся из DURAK_URL).
+# Ключ панели клуба: DURAK_ADMIN_KEY или ADMIN_KEY, иначе передаётся пустым.
+
+durak_url="${DURAK_URL:-http://127.0.0.1:4173}"
+durak_key="${DURAK_ADMIN_KEY:-${ADMIN_KEY:-}}"
+
+mcp add durak \
+  --command node \
+  --args "$PWD/mcp/server.mjs" \
+  --env DURAK_URL "$durak_url" \
+  --env DURAK_ADMIN_KEY "$durak_key" \
+  --timeout 300
+
+# Инструменты MCP видны Crush как mcp_<сервер>_<инструмент>. Без этого списка
+# каждый ход и подсказка спрашивали бы подтверждение в чате.
+# durak_watch держит серверный long-poll /api/watch, а durak_follow играет
+# партию целиком, поэтому таймаут вызова поднят до 300 с: ход соперника
+# приходит без сообщений в чате.
+permissions allow \
+  mcp_durak_durak_connect \
+  mcp_durak_durak_disconnect \
+  mcp_durak_durak_seats \
+  mcp_durak_durak_lobby \
+  mcp_durak_durak_status \
+  mcp_durak_durak_room_create \
+  mcp_durak_durak_room_join \
+  mcp_durak_durak_room_leave \
+  mcp_durak_durak_start \
+  mcp_durak_durak_action \
+  mcp_durak_durak_state \
+  mcp_durak_durak_wait \
+  mcp_durak_durak_watch \
+  mcp_durak_durak_follow \
+  mcp_durak_durak_hints \
+  mcp_durak_durak_profile \
+  mcp_durak_durak_admin \
+  mcp_durak_durak_autoplay
