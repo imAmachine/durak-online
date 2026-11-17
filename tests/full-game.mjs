@@ -38,9 +38,9 @@ function sse(url, onMessage, onError) {
 
 function connect(id, name) {
   return new Promise(resolve => {
-    players[id] = { state: null, version: 0, source: null };
+    players[id] = { state: null, source: null };
     players[id].source = sse(`${base}/events?id=${encodeURIComponent(id)}&token=${tokenFor(id)}&name=${encodeURIComponent(name)}`, payload => {
-      if (payload.type === 'game') { players[id].state = payload.state; players[id].version += 1; }
+      if (payload.type === 'game') { players[id].state = payload.state; }
     }, () => {});
     setTimeout(resolve, 350);
   });
@@ -66,6 +66,10 @@ function waitFor(predicate, timeout = 2500) {
   });
 }
 
+function waitForSeq(ids, seq) {
+  return waitFor(() => ids.every(id => Number.isInteger(players[id].state?.seq) && players[id].state.seq >= seq));
+}
+
 const a = `sim-a-${Date.now()}`;
 const b = `sim-b-${Date.now()}`;
 await connect(a, 'Алиса');
@@ -75,6 +79,7 @@ const created = await post('/api/rooms', { clientId: a, name: 'Симуляци�
 await post('/api/join', { clientId: b, roomId: created.data.code, playerName: 'Борис' });
 await post('/api/action', { clientId: a, action: 'start' });
 await waitFor(() => players[a].state && players[a].state.room.status === 'playing');
+await waitForSeq([a, b], players[a].state.seq);
 
 let discarded = 0;
 const RANKS = ['6', '7', '8', '9', '10', 'В', 'Д', 'К', 'Т'];
@@ -99,9 +104,10 @@ while (players[a].state.room.status === 'playing' && steps < 400) {
   const me = turnId === a ? a : turnId === b ? b : null;
   if (!me) { check('есть игрок с ходом', false, String(turnId)); break; }
   const myState = players[me].state;
+  if (myState.seq !== state.seq) throw new Error(`Несогласованные seq: ${state.seq}, ${myState.seq}`);
   const commit = turnId === myState.attackerId ? 'attacker' : 'defender';
   const role = myState.takePending && commit === 'defender' ? 'attacker' : commit;
-  const version = players[me].version;
+  const seq = state.seq;
 
   let action = null;
   if (role === 'attacker') {
@@ -128,8 +134,7 @@ while (players[a].state.room.status === 'playing' && steps < 400) {
   if (action.action === 'pass' && !state.takePending) discarded += state.table.reduce((sum, row) => sum + 1 + (row.defense ? 1 : 0), 0);
   const result = await post('/api/action', { clientId: me, ...action });
   if (result.status !== 200) { check(`шаг ${steps}: ${action.action} принят`, false, JSON.stringify(result.data)); break; }
-  await waitFor(() => players[a].version > version && players[b].version > version).catch(() => {});
-  await new Promise(resolve => setTimeout(resolve, 15));
+  await waitForSeq([a, b], seq + 1);
 }
 
 const final = players[a].state;
@@ -139,8 +144,10 @@ check('карты на руках у оставшихся', final.players.some(p
 check('всего карт учтено', totalCards(final) + discarded === 36, `${totalCards(final)} + ${discarded}`);
 console.log(`шагов сыграно: ${steps}, дурак: ${final.finished ? final.finished.loser : '—'}`);
 
+const finalSeq = final.seq;
 const restart = await post('/api/action', { clientId: a, action: 'start' });
 check('перезапуск партии', restart.status === 200, JSON.stringify(restart.data));
+await waitForSeq([a, b], finalSeq + 1);
 await waitFor(() => players[a].state.room.status === 'playing');
 await waitFor(() => players[a].state.hand.length === 6);
 check('после рестарта по шесть карт', players[a].state.hand.length === 6 && players[b].state.hand.length === 6);

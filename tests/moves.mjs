@@ -76,6 +76,10 @@ function waitFor(predicate, timeout = 2000) {
   });
 }
 
+function waitForSeq(ids, seq) {
+  return waitFor(() => ids.every(id => Number.isInteger(stateOf(id)?.seq) && stateOf(id).seq >= seq));
+}
+
 const a = `test-a-${Date.now()}`;
 const b = `test-b-${Date.now()}`;
 const c = `test-c-${Date.now()}`;
@@ -105,6 +109,7 @@ const started = await post('/api/action', { clientId: a, action: 'start' });
 check('старт игры', started.status === 200, JSON.stringify(started.data));
 
 const game = await waitFor(() => (stateOf(a)?.room.status === 'playing' ? stateOf(a) : null));
+await waitForSeq([a, b, c], game.seq);
 check('каждому по 6 карт', [a, b, c].every(id => stateOf(id).hand.length === 6), [a, b, c].map(id => stateOf(id).hand.length).join(','));
 check('в колоде 36 - 18 = 18 карт', game.deck === 18, String(game.deck));
 
@@ -126,8 +131,10 @@ check('первый ход принадлежит только атакующе�
 
 const shareRank = handOf(attacker).find(card => handOf(defender).some(item => item.rank === card.rank));
 const firstCard = shareRank || handOf(attacker)[0];
+const attackSeq = stateOf(a).seq;
 const attacked = await post('/api/action', { clientId: attacker, action: 'attack', cardId: firstCard.id });
 check('атака принята', attacked.status === 200, JSON.stringify(attacked.data));
+if (attacked.status === 200) await waitForSeq(ids, attackSeq + 1);
 
 const tableOnlyDefendsTheirRank = await post('/api/action', {
   clientId: attacker,
@@ -138,16 +145,20 @@ check('подкидывать чужим достоинством нельзя',
 
 const thirdCard = findCard(bystander, card => card.rank === firstCard.rank);
 if (thirdCard) {
+  const seq = stateOf(a).seq;
   const thrown = await post('/api/action', { clientId: bystander, action: 'attack', cardId: thirdCard.id });
   check('третий активный игрок может подкинуть после первого хода', thrown.status === 200, JSON.stringify(thrown.data));
+  if (thrown.status === 200) await waitForSeq(ids, seq + 1);
 } else {
   console.log('skip подкидывание третьим: нет карты нужного достоинства');
 }
 
 const sameRank = findCard(attacker, card => card.rank === firstCard.rank);
 if (sameRank) {
+  const seq = stateOf(a).seq;
   const double = await post('/api/action', { clientId: attacker, action: 'attack', cardId: sameRank.id });
   check('подкидывание тем же достоинством', double.status === 200, JSON.stringify(double.data));
+  if (double.status === 200) await waitForSeq(ids, seq + 1);
 }
 
 const transferCard = findCard(defender, card => card.rank === firstCard.rank);
@@ -155,8 +166,10 @@ if (transferCard) {
   const missingCard = await post('/api/action', { clientId: defender, action: 'transfer' });
   check('перевод без cardId отклонён', missingCard.status === 400, JSON.stringify(missingCard.data));
   const before = { attacker: stateOf(a).attackerId, defender: stateOf(a).defenderId };
+  const seq = stateOf(a).seq;
   const transferred = await post('/api/action', { clientId: defender, action: 'transfer', cardId: transferCard.id });
   check('перевод хода картой того же достоинства', transferred.status === 200, JSON.stringify(transferred.data));
+  if (transferred.status === 200) await waitForSeq(ids, seq + 1);
   await waitFor(() => stateOf(a).defenderId !== before.defender);
   check('перевод меняет защищающегося', stateOf(a).defenderId !== before.defender, `${before.defender} → ${stateOf(a).defenderId}`);
   check('атакующим стал переводивший', stateOf(a).attackerId === defender, `${stateOf(a).attackerId} vs ${defender}`);
@@ -166,13 +179,17 @@ if (transferCard) {
 
 const currentDefender = stateOf(a).defenderId;
 const currentAttacker = stateOf(a).attackerId;
+const takeSeq = stateOf(a).seq;
 const takeResult = await post('/api/action', { clientId: currentDefender, action: 'take' });
 check('защищающийся объявляет «беру»', takeResult.status === 200, JSON.stringify(takeResult.data));
+if (takeResult.status === 200) await waitForSeq(ids, takeSeq + 1);
 await waitFor(() => stateOf(a).takePending === true);
 check('состояние помечает окно подкидывания', stateOf(a).takePending === true);
 const handBeforeTake = stateOf(currentDefender).hand.length;
+const finishSeq = stateOf(a).seq;
 const finishTake = await post('/api/action', { clientId: currentAttacker, action: 'pass' });
 check('атакующий завершает взятие', finishTake.status === 200, JSON.stringify(finishTake.data));
+if (finishTake.status === 200) await waitForSeq(ids, finishSeq + 1);
 await waitFor(() => stateOf(a).table.length === 0);
 const afterTake = stateOf(a);
 check('стол очищен после взятия', afterTake.table.length === 0, String(afterTake.table.length));
