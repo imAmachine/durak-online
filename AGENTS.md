@@ -24,11 +24,13 @@ npm test         # integration tests against a server already running on localho
 
 ### Server (`server.js`, ~675 lines)
 
-Single-file Node HTTP server. All state is in three in-memory structures:
+Single-file Node HTTP server. All state is in four in-memory structures:
 
 - `clients: Map<clientId, { id, name, res, roomId }>` — one entry per open SSE stream.
 - `rooms: Map<roomCode, room>` — room code is 6 uppercase hex chars.
 - `history: []` — finished games, unbounded; lobby payload sends only the last 8 reversed.
+- `accounts: Map<clientId, { id, name, balance, games, wins, losses }>` — club profile and
+  wallet per client id, created on first SSE connect. Not persisted anywhere.
 
 Entry points:
 
@@ -41,8 +43,13 @@ Entry points:
   name/connection instead of adding a new seat.
 - `POST /api/action` — all gameplay actions, delegated to `act()`:
   `start | attack | defend | transfer | take | pass`.
-- `POST /api/profile`, `POST /api/leave`, `GET /api/status`.
+- `POST /api/profile`, `POST /api/leave`, `POST /api/admin`, `GET /api/status`.
 - Anything else is served as a static file from the repo root (`/` → `index.html`).
+
+`/api/admin` is a single POST endpoint with `op: list | update | reset | balance` and a `key`
+body field checked against `ADMIN_KEY` (env, default `durak-admin`). It can rename players,
+set balance/stats, and reset to the starting balance. Errors are 403 for a wrong key, 404 for
+an unknown player.
 
 Every API response is JSON; errors are `{ error: "<Russian message>" }` with status 400/404.
 
@@ -53,10 +60,21 @@ Game flow inside `server.js`:
 - After a trick: `pass` (all cards beaten) or `collectTable()` (defender took cards) clears
   the table, rotates roles, calls `refillHands()`, then `settle()` → `normalizeRoles()` →
   `updateTurn()` → `broadcastRoom()`.
+- `finishGame(room, loser, message)` is the only place a game ends: it sets
+  `room.finished`, appends history, and calls `settleAccounts()` (stats + bet payout).
+  `settle()` and `leaveRoom()` both go through it.
+
+Money model: `room.bet` is one of `BETS` (`0/50/100/250/500`, anything else becomes 0),
+`room.pot` is collected at `start` by `chargeStakes()` (host starts, all connected players
+must afford it), and `settleAccounts()` credits `room.lastPayouts` per player from the pot
+to everyone except the loser. Starting balance is `START_BALANCE = 1000`. Leaving during
+play counts as a loss, forfeits the stake, and if one player is left the game ends with the
+leaver as the loser.
 
 `gameState(room, clientId)` builds a per-viewer snapshot: own hand only, opponents' card
-counts and roles, table, trump, deck size, derived permission flags
-(`canAttack`, `canDefend`, `canTransfer`, `canPass`, `canTake`, `canStart`), and messages.
+counts and roles, table, trump, deck size, `room.bet`, `payout` (this viewer's last net
+result), derived permission flags (`canAttack`, `canDefend`, `canTransfer`, `canPass`,
+`canTake`, `canStart`), and messages.
 `broadcastRoom()` sends each player a snapshot tailored to their own id; there is no shared
 broadcast payload, so hidden information never leaks by construction. Preserve that when
 adding fields.
@@ -75,6 +93,16 @@ in `index.html`. Global mutable `state` object; server snapshots drive rendering
 - `playCard()` performs client-side UX validation, then posts `attack`/`defend` (with
   `targetCardId` for a specific row). Server is authoritative; the client re-implements
   `beats()` only to give instant toasts.
+- `state.account` mirrors the server wallet/stats. The server pushes
+  `{ type: 'account' }` on connect and after every room broadcast, so the sidebar balance
+  and the profile modal use it directly; do not duplicate balance locally.
+- Admin panel: `openAdminGate()` asks for the key once per tab (`sessionStorage['durak.admin']`),
+  `syncAdminNav()` shows the `data-view="admin"` nav item, `openAdminPanel()` lists accounts
+  and `openAdminPlayer()` edits them through `/api/admin`.
+- `fitHand()` computes one `--overlap` for the hand row and, when even the minimum card step
+  does not fit, sets `zoom` on `#myHand` so a 24+ card hand stays on the table. `fitTable()`
+  does the same for six table pairs (caps the row at its `max-width: 88%`). Call both after
+  rendering and on resize.
 - Rendering uses `innerHTML` with template strings; every user-controlled value is passed
   through `esc()`. Keep doing that.
 - Profile lives in `localStorage['durak.profile']`, theme in `localStorage['durak.theme']`
@@ -95,9 +123,15 @@ The hero banner and playing table are intentionally dark in both themes, so they
 fixed `--felt-ink` / `--felt-brass` tokens instead of `--ivory` / `--brass` (those flip in
 light mode and would become unreadable). Table geometry is hand-tuned: seats are placed by
 `.pos-1`…`.pos-5`, the deck sits at the lower left, and table cards form one nowrap row.
-Keep seats, deck, cards, message, and hand non-overlapping; the current layout is verified
-from 320px to 1600px. On narrow screens the hero card fan moves into a bottom band, which
-relies on the extra bottom padding on `.hero-banner`.
+Keep seats, deck, cards, message, and hand non-overlapping; the layout is verified from
+320px to 1600px, including the 961–1180px range where seats shrink via their own breakpoint
+and five opponents plus six pairs are the tightest case. On narrow screens the hero card fan
+moves into a bottom band, which relies on the extra bottom padding on `.hero-banner`.
+
+The logo block (`.brand`) is locked against text selection and keeps the default cursor on
+hover. Wallet and admin components (`.wallet`, `.admin-row`, `.bet-pill`, `.finish-payout`)
+reuse the same tokens; the admin list is a scroll-free simple list, so long player lists can
+grow the modal which already scrolls.
 
 The deck is a `.deck-stack` of card backs with the face-up trump card lying crosswise
 underneath and sticking out to the right; its content is padded left so it lands in the
@@ -148,9 +182,10 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
 - **Identity is client-supplied.** `clientId` comes from the query string/sessionStorage and
   is not authenticated or validated beyond SSE registration. Do not treat it as a security
   boundary.
-- **Everything is in memory.** Restarting the server loses rooms, players, and history. A
-  30-second interval deletes rooms with no connected players (immediately if not playing, or
-  once the room is older than 60 seconds) and finished rooms older than 30 minutes.
+- **Everything is in memory.** Restarting the server loses rooms, players, history, and the
+  club accounts (balances and stats). A 30-second interval deletes rooms with no connected
+  players (immediately if not playing, or once the room is older than 60 seconds) and
+  finished rooms older than 30 minutes.
 - **Some rules live only in the permission flags.** `gameState()` contains constraints that
   `act()` does not re-check (for example, `canAttack` requires the defender to hold more
   cards than there are *unbeaten* table rows, so already beaten pairs do not eat into the
@@ -159,11 +194,17 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
   `act()` branch, the client pre-check in `playCard()`, and duplicate rank/beat helpers as
   needed.
 - **`canStart` requires the host plus two connected players**; `start` filters the roster to
-  connected players only. `join` is rejected while `status === 'playing'`.
-- **Leaving during play** clears the table, transfers host if needed, and normalizes roles;
-  if fewer than two players remain the game ends immediately with the survivor as loser.
+  connected players only, is rejected while `status === 'playing'`, and rejects the whole
+  start when any connected player cannot cover `room.bet`. `join` is rejected while
+  `status === 'playing'`.
+- **Joining does not evict disconnected players.** Seats stay reserved for a player who is
+  refreshing the tab (their SSE reconnects in ~2 s); only players offline for more than 60
+  seconds are dropped, and only when the room is full.
+- **Leaving during play** clears the table, resets `takePending`, transfers host if needed,
+  records a loss for the leaver, and normalizes roles; if fewer than two players remain the
+  game ends immediately with the leaver as the loser (the survivor wins the pot).
 - **Asset cache busting is manual.** Script/style URLs in `index.html` carry `?v=N`
-  (`app.js?v=7`, `style.css?v=7`). Bump the matching version when changing those files, or
+  (`app.js?v=16`, `style.css?v=18`). Bump the matching version when changing those files, or
   browsers may serve stale assets (static files are served without cache headers).
 - **Russian everywhere.** UI copy, server messages, README, and test labels are Russian.
   New user-facing strings should be Russian.
@@ -178,6 +219,8 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
     transfer, two-phase take, leave.
   - `tests/rules-fixes.mjs` — beat rules (including trump), multi-card attacks, adding a
     card after "take", repeated over up to 30 randomized attempts because hands are random.
+  - `tests/money.mjs` — club accounts: starting balance, stake charge on start, payout to
+    the winner when the opponent leaves, admin list/update/reset, bet validation.
   - `tests/full-game.mjs` — simulates a full 2-player game step by step (also checks deck
     conservation), then restarts and asserts 6-card hands and a 24-card deck.
 - Each script has its own SSE helper, `check(label, condition, extra)` reporter, unique
