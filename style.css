@@ -1698,7 +1698,7 @@ a { color: var(--brass); text-underline-offset: 3px; }
 
 .hand-card.red { color: #a8483d; }
 .hand-slot:hover .hand-card, .hand-card:focus-visible { z-index: 3; box-shadow: 0 26px 44px rgba(0, 0, 0, .5), 0 0 0 2px rgba(233, 200, 143, .7); transform: translateY(-18px) rotate(-1deg); }
-.hand-card:focus-visible { outline: none; }
+.hand-card:focus-visible { outline: 3px solid var(--brass); outline-offset: 3px; }
 .hand-card.dim { filter: saturate(.3) brightness(.98); }
 .hand-card.dim .card-corner, .hand-card.dim .card-pips, .hand-card.dim .card-ace, .hand-card.dim .card-court { opacity: .45; }
 

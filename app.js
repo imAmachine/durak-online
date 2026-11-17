@@ -858,13 +858,13 @@ function renderGame() {
   table.innerHTML = game.table.length
     ? game.table.map(row => `<div class="pair">${cardHTML(row.attack, `attack ${row.defense ? '' : 'target'}`).replace('<div ', `<div data-target-card="${esc(row.attack.id)}" `)}${row.defense ? cardHTML(row.defense, 'defense') : ''}</div>`).join('')
     : '';
-  table.addEventListener('dragover', event => event.preventDefault());
-  table.addEventListener('drop', event => {
+  table.ondragover = event => event.preventDefault();
+  table.ondrop = event => {
     if (event.target.closest('.target')) return;
     event.preventDefault();
     const cardId = event.dataTransfer.getData('text/plain');
     if (cardId) playCard(cardId);
-  });
+  };
   table.querySelectorAll('.target').forEach(target => {
     target.addEventListener('dragover', event => event.preventDefault());
     target.addEventListener('drop', event => {
@@ -912,13 +912,17 @@ function renderGame() {
   const handRoot = document.querySelector('#myHand');
   const handSignature = `${game.room.id}:` + hand.map(card => `${card.id}${dimmed(card) ? '·' : ''}`).join(' ') + `|${game.trump || ''}`;
   if (handRoot.dataset.signature !== handSignature) {
+    const focusedCard = handRoot.contains(document.activeElement) ? document.activeElement.dataset.card : null;
     handRoot.dataset.signature = handSignature;
     handRoot.innerHTML = hand.map(card => {
       const red = card.suit === '♥' || card.suit === '♦';
       return `<div class="hand-slot"><button class="hand-card ${red ? 'red' : ''} ${dimmed(card) ? 'dim' : ''}" data-card="${esc(card.id)}">${cardCornersHTML(card)}</button></div>`;
     }).join('');
     handRoot.querySelectorAll('.hand-card').forEach((button, index) => {
-      button.setAttribute('aria-label', button.dataset.card);
+      const card = hand[index];
+      const suits = { '♠': 'пик', '♣': 'треф', '♥': 'червей', '♦': 'бубен' };
+      const ranks = { 'В': 'валет', 'Д': 'дама', 'К': 'король', 'Т': 'туз' };
+      button.setAttribute('aria-label', `${ranks[card.rank] || card.rank} ${suits[card.suit] || card.suit}`);
       if (!previousHand.has(button.dataset.card) && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
         button.animate([{ opacity: 0, transform: 'translateY(18px)' }, { opacity: 1, transform: 'translateY(0)' }], { duration: 380, delay: Math.min(index * 35, 210), easing: 'cubic-bezier(.22,1,.36,1)', fill: 'backwards' });
       }
@@ -926,6 +930,10 @@ function renderGame() {
       button.addEventListener('dragstart', event => event.dataTransfer.setData('text/plain', button.dataset.card));
       button.addEventListener('click', () => playCard(button.dataset.card));
     });
+    if (focusedCard) {
+      const replacement = [...handRoot.querySelectorAll('.hand-card')].find(button => button.dataset.card === focusedCard);
+      if (replacement) replacement.focus();
+    }
   }
 
   if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
@@ -1003,7 +1011,9 @@ function renderActions(game) {
     }
     buttons.push({ label: `Код: ${game.room.id}`, action: 'copy', style: 'secondary-btn' });
   }
-  actions.innerHTML = buttons.map(button => `<button class="${button.style}" ${button.disabled ? 'disabled' : ''} data-action="${button.action || ''}">${esc(button.label)}</button>`).join('');
+  const html = buttons.map(button => `<button class="${button.style}" ${button.disabled ? 'disabled' : ''} data-action="${button.action || ''}">${esc(button.label)}</button>`).join('');
+  if (actions.innerHTML === html) return;
+  actions.innerHTML = html;
   actions.querySelectorAll('button[data-action]').forEach(element => {
     const action = element.dataset.action;
     if (!action) return;
@@ -1136,19 +1146,20 @@ async function leaveRoom() {
   try {
     await api('/api/leave', { clientId });
   } catch (error) {
-    /* лобби могло быть уже удалено */
+    toast(error.message);
+    return false;
   }
   state.game = null;
   document.querySelector('#finishOverlay').classList.remove('open');
   setView('lobby');
+  return true;
 }
 document.querySelector('#leaveRoom').addEventListener('click', () => {
   if (!state.game || state.game.room.status !== 'playing') return leaveRoom();
-  openModal('<div class="modal-label">ПОКИНУТЬ СТОЛ</div><h2>Уже уходите?</h2><p class="modal-subtitle">Вы выйдете из текущей партии. Другие игроки продолжат без вас.</p><div class="modal-actions"><button class="secondary-btn" id="stayAtTable">Остаться</button><button class="primary-btn" id="confirmLeave">Покинуть стол</button></div>', root => {
+  openModal('<div class="modal-label">ПОКИНУТЬ СТОЛ</div><h2>Уже уходите?</h2><p class="modal-subtitle">Если вы ещё играете, выход завершит партию и будет засчитан как поражение.</p><div class="modal-actions"><button class="secondary-btn" id="stayAtTable">Остаться</button><button class="primary-btn" id="confirmLeave">Покинуть стол</button></div>', root => {
     root.querySelector('#stayAtTable').addEventListener('click', closeModal);
     root.querySelector('#confirmLeave').addEventListener('click', async () => {
-      await leaveRoom();
-      closeModal();
+      if (await leaveRoom()) closeModal();
     });
   });
 });
