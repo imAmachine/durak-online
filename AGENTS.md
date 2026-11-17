@@ -8,6 +8,7 @@ dependencies, no build step. All user-facing text is Russian.
 
 ```bash
 npm start        # node server.js; PORT env (default 4173), HOST env (default 0.0.0.0)
+npm run mcp      # mcp/server.mjs; MCP stdio server over the HTTP API
 npm test
 BASE_URL=http://127.0.0.1:4174 npm test
 ```
@@ -15,7 +16,7 @@ BASE_URL=http://127.0.0.1:4174 npm test
 - There is no lint, typecheck, format, or build step. There is no CI config.
 - Tests are not self-contained: start the server first in another terminal, then run
   `npm test`. Integration tests use `BASE_URL` when set, otherwise `http://localhost:4173`.
-- `npm test` chains seven `.mjs` scripts with `&&`, so the first failing suite stops the
+- `npm test` chains nine `.mjs` scripts with `&&`, so the first failing suite stops the
   rest. Scripts exit non-zero on failure and print `ok`/`FAIL` lines.
 - Tests use global `fetch` and top-level `await`, so they need Node 18+. No package
   dependencies exist; there is no lockfile.
@@ -47,6 +48,12 @@ Entry points:
   name/connection instead of adding a new seat.
 - `POST /api/action` — all gameplay actions, delegated to `act()`:
   `start | attack | defend | transfer | take | pass`.
+- `GET /api/watch?id=<id>&token=<token>&since=<seq>&until=<mode>&timeout=<ms>` — the
+  server-side hook: a long-poll that returns as soon as the room's event sequence passes
+  `since` and `until` matches (`any | game | your-turn | opponent | finished`), otherwise
+  `{ hit: false }` after `timeout` (200-60000 ms). It answers with the journal slice, the
+  room sequence, and a per-viewer snapshot, so an agent can wait for its turn without
+  polling or chat messages.
 - `POST /api/profile`, `POST /api/leave`, `POST /api/admin`, `GET /api/status`.
 - Authenticated gameplay POSTs carry `clientId` and `body.token`; any POST supplying a
   `clientId` is also checked against `sessions` (including admin requests).
@@ -86,6 +93,14 @@ result), derived permission flags (`canAttack`, `canDefend`, `canTransfer`, `can
 broadcast payload, so hidden information never leaks by construction. Preserve that when
 adding fields.
 
+Every broadcast also records one room event: `recordEvent()` bumps `room.seq` and appends
+`{ seq, action, actorId, actorName, cardId, targetCardId, status, turnId, message }` to
+`room.events` (last 40). The action and card come from `markEvent()`, which `act()` sets
+before validating; a rejected action clears it, so a failed move never lands in the journal.
+`releaseHooks(room)` then wakes the pending `/api/watch` waiters. Snapshots expose `seq` and
+the last eight events as `log`. Events carry only public data (played cards, actor ids,
+messages), so they are safe in a per-viewer snapshot.
+
 ### Client (`app.js`, ~1238 lines)
 
 Single non-module script loaded at the end of `index.html`; all DOM ids it uses are defined
@@ -107,30 +122,89 @@ in `index.html`. Global mutable `state` object; server snapshots drive rendering
 - Admin panel: `openAdminGate()` asks for the key once per tab (`sessionStorage['durak.admin']`),
   `syncAdminNav()` shows the `data-view="admin"` nav item, `openAdminPanel()` lists accounts
   and `openAdminPlayer()` edits them through `/api/admin`.
-- `fitHand()` computes one `--overlap` for the hand row and, when even the minimum card step
-  does not fit, sets `zoom` on `#myHand` so a 24+ card hand stays on the table. `fitTable()`
-  does the same for six table pairs (caps the row at its `max-width: 88%`). Call both after
-  rendering and on resize.
+- Hand cards sit in `.hand-slot` wrappers so the hover lift never moves the hover target:
+  `.hand-slot:hover .hand-card` raises the card inside a box that stays put, which is what
+  stopped the up/down flicker when the cursor rested on the lower part of a card. The row is
+  rebuilt only when `#myHand`'s signature (card ids, dim flags, trump, room) changes, so an
+  opponent's move no longer recreates the cards under the cursor.
+- `fitHand()` computes one `--overlap` for the hand row (a visible step of at least
+  `max(24, min(44, cardWidth * .33))`, so heavy hands overlap without becoming unreadable)
+  and, when even the minimum step does not fit, sets `zoom` on `#myHand`; a scrollable hand
+  (`overflow-x: auto` below 760px) is spaced for reading instead of being zoomed. `fitTable()`
+  does the same for up to six table pairs against the row cap in `--row-max` (88%, 96% below
+  760px). Both measure the parent box rather than clearing `zoom` first and only write changed
+  values, so a render never makes the layout jump or oscillate. Call both after rendering and
+  on resize.
 - Rendering uses `innerHTML` with template strings; every user-controlled value is passed
   through `esc()`. Keep doing that.
-- Profile lives in `localStorage['durak.profile']`, theme in `localStorage['durak.theme']`
-  (applied via `document.documentElement.dataset.theme`). Card identity is per-tab
+- Profile lives in `localStorage['durak.profile']`. The interface uses one fixed dark theme. Card identity is per-tab
   (`sessionStorage`), so two tabs are two players.
 - Invite links are `/?code=XXXXXX`; `openJoinModal(code)` pre-fills the join modal.
+
+### MCP (`mcp/server.mjs`, ~1030 lines)
+
+A dependency-free MCP server on stdio (newline-delimited JSON-RPC) that drives the HTTP API,
+so an agent can open seats, play, and exercise the service. Project `.crushrc` registers it as
+`durak` with `node mcp/server.mjs`; `DURAK_URL` (default `http://127.0.0.1:4173`) selects the
+service and `DURAK_ADMIN_KEY`/`ADMIN_KEY` supplies the club key. Nothing needs the repo cwd:
+the tools only speak HTTP.
+
+- `Seat` holds one player: a random 64-hex `id` plus a matching session `token`, an open SSE
+  request to `/events`, and the latest `account`/`game`/`lobby` payloads. It reconnects every
+  second while `wantOpen`, and `open()` resolves only once the stream is registered, because
+  every gameplay POST is rejected until then. Seats live in the module-level `seats` map keyed
+  by tool label (`p1`, `auto1`, …); `seatFromArgs` defaults to the only open seat.
+- `durak_action` posts one action and waits for the seat's next SSE event before returning a
+  fresh snapshot; failures surface the server's Russian error as `isError`.
+- `durak_watch` (and `durak_wait`) drive the server hook `/api/watch`: they long-poll with
+  the seat's last `game.seq`, so the call returns the moment the condition matches and
+  replays the events the seat missed. `durak_watch` loops chunks for up to `totalMs`
+  (default 180 s) and reports who played what plus hints when it is your turn; `durak_wait`
+  is the single short wait. Without a room both fall back to the SSE stream. `.crushrc`
+  raises the MCP call timeout to 300 s so the long wait is not cut off.
+- A seat keeps its own SSE journal plus a `seenSeq` cursor: tools that hand the model a
+  snapshot mark it seen, so `durak_watch`/`durak_wait` answer at once (`via: 'cache'`) when
+  the move arrived before the call. They replay the room events already sitting in the
+  journal instead of sleeping until the timeout, and return immediately when `your-turn` or
+  `finished` already holds in the current snapshot. `durak_follow` uses the same catch-up,
+  so a move that lands between its own actions is never lost and never costs a full poll.
+- `durak_follow` plays one seat to the end on its own: `myMove()` picks defend/attack/take/pass
+  from the seat snapshot, the loop acts, then waits on `/api/watch` (`your-turn`) for the next
+  decision. Two concurrent calls on two seats finish a whole game, which is how
+  `tests/mcp.mjs` covers it. It returns one compact report: outcome, own move count, the last
+  events, and the final snapshot.
+- `durak_hints` mirrors `beats()` and `tableRanks()` from the server (VALUES over the 52-rank
+  list) to list attackable, defending, and transferable cards without a server round trip.
+- `durak_autoplay` opens 2–6 seats, creates and joins a room, starts, and plays with a simple
+  strategy: the defender always defends with the cheapest beating card (non-trump first) or
+  takes, then the attacker adds matching-rank cards and passes. It gates each step on every
+  seat having received `gameSeq >= baseline + steps`; actions broadcast one game event per
+  player, so a lagging seat would otherwise act on a stale table. It waits for `account.games`
+  before reporting balances. Seats are closed unless `keepSeats` is set.
+- `durak_wait` returns `hit: false` on timeout instead of an error, so an agent can poll events
+  without treating an idle table as a failure. Seats live in the MCP process, so a game survives
+  between chat turns.
+- `.crushrc` lists all eighteen `mcp_durak_*` names in `permissions allow`; without that
+  list Crush prompts for every MCP call. It also raises the MCP call timeout, because
+  `durak_watch` and `durak_follow` long-poll for minutes.
+- Tool output is a short Russian summary; `structuredContent` carries a compact
+  `snapshot` (room, roles, table as text, hand, counts, flags) instead of the whole game
+  state, and `verbose: true` adds the full JSON. Snapshots in MCP output drop `log`, because
+  `durak_watch` already reports the events that arrived; this keeps per-move responses small
+  enough that a game does not stall on context size. The server is authoritative, so no rules
+  are duplicated beyond hints.
 
 ### Styles (`style.css`)
 
 One stylesheet with a unified token system: deep felt green, warm ivory, and brass accents.
-Dark is the default (set on `<html data-theme="dark">`; `storedTheme()` also falls back to
-dark), and light overrides live in `[data-theme="light"]`. `applyTheme()` persists the
-choice and syncs `<meta name="theme-color">`. Display type is Cormorant Garamond, UI type
+The interface uses a fixed dark theme. Display type is Cormorant Garamond, UI type
 is Manrope, both loaded from Google Fonts with Georgia/system fallbacks. Responsive
 layouts and `prefers-reduced-motion` rules live near the end of the stylesheet.
 
-The hero banner and playing table are intentionally dark in both themes, so they use the
-fixed `--felt-ink` / `--felt-brass` tokens instead of `--ivory` / `--brass` (those flip in
-light mode and would become unreadable). Table geometry is hand-tuned: seats are placed by
-`.pos-1`…`.pos-5`, the deck sits at the lower right, and table cards form one nowrap row.
+The hero banner and playing table use the fixed `--felt-ink` / `--felt-brass` tokens.
+Table geometry is hand-tuned: seats are placed by
+`.pos-1`…`.pos-5`, the deck sits on the left at `bottom: 30%` (raised toward the vertical
+center, below the card row), and table cards form one nowrap row.
 Keep seats, deck, cards, message, and hand non-overlapping; the layout is verified from
 320px to 1600px, including the 961–1180px range where seats shrink via their own breakpoint
 and five opponents plus six pairs are the tightest case. On narrow screens the hero card fan
@@ -148,10 +222,11 @@ the actions collapse into a two-column grid.
 
 Page backdrop: a fixed `.ambient` layer sits at `z-index: 0` behind `.app-shell` (`z-index: 1`).
 `startAmbient()` spawns random props into three depth layers: `.ambient-far` (dimmest, slowest,
-the only layer with its own blur), `.ambient-mid` (behind the frosted `.ambient-glass` pane), and
-`.ambient-near` (above the pane, sharp, softened by `.ambient-haze` so suits stay readable,
-largest and fastest). The pane keeps only a light `backdrop-filter` blur, so mid cards stay
-legible instead of reading as a full blur, and depth comes from tone, scale and speed. Faces are built with
+and deliberately sharp so its ranks still read), `.ambient-mid` (behind the `.ambient-glass`
+tone wash, blurred 4px), and `.ambient-near` (above the wash, largest and fastest, blurred
+6px). `.ambient-glass` is only the tone wash and `.ambient-frost` only the matte veil plus
+grain (`::after`, soft-light noise); there is no full-screen `backdrop-filter`, so the blur
+belongs to the mid and near props and the distant cards stay legible. Faces are built with
 `cardCornersHTML()` inside a real `.card-face`, so corners, pips, courts and aces are the same as
 at the table; cards are rendered at their final size (never transform-scaled, which aliases the
 hairlines) with `--w` driving the card variables. Props are fully opaque and get depth from the
@@ -179,8 +254,8 @@ so the row stays on one line down to 320px. It is decorative and `aria-hidden`, 
 way.
 
 The deck is a `.deck-stack` of card backs with the face-up trump card lying crosswise
-underneath and sticking out to the right; its content is padded left so it lands in the
-visible part. Table rows are `.pair` blocks where the defense card is offset down-right and
+underneath, centered so its ends stick out evenly on both sides, and the count label centered
+beneath the stack. Table rows are `.pair` blocks where the defense card is offset down-right and
 rotated slightly (`transform-origin: 0 0`) so the attack card's rank corner stays readable;
 each card renders rank corners top-left and bottom-right. Card faces come from
 `cardBodyHTML()` in `app.js` (pip layouts for numeric ranks, framed courts, a single suit
@@ -250,7 +325,7 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
   as loser. A finished leaver is retained in the room and can still receive final settlement;
   leaving a waiting room removes the player normally.
 - **Asset cache busting is manual.** Script/style URLs in `index.html` carry `?v=N`
-  (`app.js?v=26`, `style.css?v=47`). Bump the matching version when changing those files, or
+  (`app.js?v=30`, `style.css?v=53`). Bump the matching version when changing those files, or
   browsers may serve stale assets (static files are served without cache headers).
 - **Russian everywhere.** UI copy, server messages, README, and test labels are Russian.
   New user-facing strings should be Russian.
@@ -260,8 +335,8 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
 
 ## Testing notes
 
-- `engine` and `client` are self-contained VM-based regression suites; the other five scripts
-  exercise a running server:
+- `engine` and `client` are self-contained VM-based regression suites; the other seven
+  scripts exercise a running server:
   - `tests/engine.mjs` — engine rules, transfer card/capacity checks, leave and offline cleanup.
   - `tests/client.mjs` — client session token generation/storage and transfer UI behavior.
   - `tests/security.mjs` — token format/binding, SSE replacement protection, and authenticated
@@ -274,6 +349,12 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
     the winner when the opponent leaves, admin list/update/reset, bet validation.
   - `tests/full-game.mjs` — simulates a full 2-player game step by step (also checks deck
     conservation), then restarts and asserts 6-card hands and a 24-card deck.
+  - `tests/mcp.mjs` — spawns `mcp/server.mjs` and drives it over stdio: handshake, tool list,
+    two seats, create/join/start, state/hints/admin, a `durak_watch` wait on the opponent's
+    move, a full `durak_autoplay` run, and cleanup.
+  - `tests/hooks.mjs` — `/api/watch`: journal and `seq` in snapshots, timeout without
+    changes, token/`until` validation, firing on the opponent's action, replay of a missed
+    event, and firing on `finished` after the defender leaves.
 - Integration scripts have their own SSE helpers, `check(label, condition, extra)` reporters, unique
   client ids, and fixed `setTimeout` waits. Integration suites use `process.env.BASE_URL` when
   set, otherwise `http://localhost:4173`. Randomized hands mean the tests may skip a scenario
