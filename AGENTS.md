@@ -94,10 +94,19 @@ layouts and `prefers-reduced-motion` rules live near the end of the stylesheet.
 The hero banner and playing table are intentionally dark in both themes, so they use the
 fixed `--felt-ink` / `--felt-brass` tokens instead of `--ivory` / `--brass` (those flip in
 light mode and would become unreadable). Table geometry is hand-tuned: seats are placed by
-`.pos-1`…`.pos-5`, the deck sits at the lower left, and table cards form one nowrap row with
-negative pair margins. Keep seats, deck, cards, message, and hand non-overlapping; the
-current layout is verified from 320px to 1600px. On narrow screens the hero card fan moves
-into a bottom band, which relies on the extra bottom padding on `.hero-banner`.
+`.pos-1`…`.pos-5`, the deck sits at the lower left, and table cards form one nowrap row.
+Keep seats, deck, cards, message, and hand non-overlapping; the current layout is verified
+from 320px to 1600px. On narrow screens the hero card fan moves into a bottom band, which
+relies on the extra bottom padding on `.hero-banner`.
+
+The deck is a `.deck-stack` of card backs with the face-up trump card lying crosswise
+underneath and sticking out to the right; its content is padded left so it lands in the
+visible part. Table rows are `.pair` blocks where the defense card is offset down-right and
+rotated slightly (`transform-origin: 0 0`) so the attack card's rank corner stays readable;
+each card renders rank corners top-left and bottom-right. Card faces come from
+`cardBodyHTML()` in `app.js` (pip layouts for numeric ranks, framed courts, a single suit
+for aces) and scale through the `--corner-size` / `--pip-size` / `--ace-size` /
+`--court-size` variables, which the media queries override instead of touching font rules.
 
 New hand/table cards animate with the Web Animations API only when they arrive, not on
 every SSE update. Modal focus is trapped, background content becomes inert, and focus

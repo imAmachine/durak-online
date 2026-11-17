@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#080d0a">
   <meta name="description" content="Дурак онлайн для своей компании. Создайте стол, отправьте друзьям код и сыграйте в подкидного или переводного.">
   <title>Дурак Онлайн · Карточный клуб</title>
-  <link rel="stylesheet" href="style.css?v=7">
+  <link rel="stylesheet" href="style.css?v=14">
 </head>
 <body>
   <a class="skip-link" href="#main">Перейти к содержимому</a>
@@ -83,7 +83,13 @@
         <div class="table">
           <div class="table-emblem" aria-hidden="true"><span>♠</span><small>ДУРАК · КЛУБ</small></div>
           <div class="seats" id="seats"></div>
-          <div class="deck" id="deckBox"><div class="deck-card" id="trumpCard"><span></span><small>Козырь</small></div><div class="deck-count"><span id="deckCount">0</span> в колоде</div></div>
+          <div class="deck" id="deckBox">
+            <div class="deck-stack">
+              <div class="deck-trump" id="trumpCard"><small>Козырь</small></div>
+              <div class="deck-back" aria-hidden="true"><i>♠</i></div>
+            </div>
+            <div class="deck-count"><span id="deckCount">0</span> в колоде</div>
+          </div>
           <div class="table-cards" id="tableCards"></div>
           <div class="table-message" id="tableMessage" role="status"></div>
           <div class="my-hand" id="myHand" aria-label="Ваши карты"></div>
@@ -100,6 +106,6 @@
     </div>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
-  <script src="app.js?v=7"></script>
+  <script src="app.js?v=13"></script>
 </body>
 </html>

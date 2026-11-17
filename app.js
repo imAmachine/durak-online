@@ -444,6 +444,8 @@ function openSettingsModal() {
 }
 
 /* navigation */
+new ResizeObserver(() => fitHand()).observe(document.querySelector('#myHand'));
+
 document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', () => {
     const view = item.dataset.view;
@@ -474,6 +476,7 @@ function setView(view) {
     else item.removeAttribute('aria-current');
   });
   updateResumeButton();
+  if (gameActive) fitHand();
   if (view === 'lobby') renderLobby();
 }
 
@@ -539,16 +542,44 @@ function connect() {
   };
 }
 
-function sortHand(hand) {
+function sortHand(hand, trump) {
+  const suitOrder = suit => (suit === trump ? SUIT_ORDER.length : SUIT_ORDER.indexOf(suit));
   return [...hand].sort((a, b) => {
-    if (a.suit !== b.suit) return SUIT_ORDER.indexOf(a.suit) - SUIT_ORDER.indexOf(b.suit);
+    if (a.suit !== b.suit) return suitOrder(a.suit) - suitOrder(b.suit);
     return RANK_ORDER.indexOf(a.rank) - RANK_ORDER.indexOf(b.rank);
   });
 }
 
+const PIP_LAYOUTS = {
+  2: [[1, 1], [5, 3]],
+  3: [[1, 1], [3, 2], [5, 3]],
+  4: [[1, 1], [1, 3], [5, 1], [5, 3]],
+  5: [[1, 1], [1, 3], [3, 2], [5, 1], [5, 3]],
+  6: [[1, 1], [1, 3], [3, 1], [3, 3], [5, 1], [5, 3]],
+  7: [[1, 1], [1, 3], [3, 1], [3, 2], [3, 3], [5, 1], [5, 3]],
+  8: [[1, 1], [1, 3], [2, 1], [2, 3], [4, 1], [4, 3], [5, 1], [5, 3]],
+  9: [[1, 1], [1, 3], [2, 1], [2, 3], [3, 2], [4, 1], [4, 3], [5, 1], [5, 3]],
+  10: [[1, 1], [1, 3], [2, 1], [2, 3], [2, 2], [4, 2], [4, 1], [4, 3], [5, 1], [5, 3]]
+};
+
+function cardBodyHTML(card) {
+  if (card.rank === 'Т') return `<span class="card-ace">${card.suit}</span>`;
+  if (card.rank === 'В' || card.rank === 'Д' || card.rank === 'К') {
+    return `<span class="card-court"><i>${esc(card.rank)}</i></span>`;
+  }
+  const pips = PIP_LAYOUTS[card.rank] || [[3, 2]];
+  return `<span class="card-pips">${pips.map(([row, column]) => `<i style="grid-area:${row}/${column}">${card.suit}</i>`).join('')}</span>`;
+}
+
+function cardCornersHTML(card) {
+  const faceRank = 'ВДКТ'.includes(card.rank);
+  const corner = `<span class="card-corner">${esc(card.rank)}${faceRank ? `<i>${card.suit}</i>` : ''}</span>`;
+  return `${corner}${cardBodyHTML(card)}<span class="card-corner bottom" aria-hidden="true">${esc(card.rank)}${faceRank ? `<i>${card.suit}</i>` : ''}</span>`;
+}
+
 function cardHTML(card, extraClass = '') {
   const red = card.suit === '♥' || card.suit === '♦';
-  return `<div class="card-face ${red ? 'red' : ''} ${extraClass}"><span class="card-corner">${esc(card.rank)}<i>${card.suit}</i></span><span class="card-suit">${card.suit}</span></div>`;
+  return `<div class="card-face ${red ? 'red' : ''} ${extraClass}">${cardCornersHTML(card)}</div>`;
 }
 
 function cardBackHTML(extraClass = '') {
@@ -566,10 +597,11 @@ function renderGame() {
   document.querySelector('#roomCode').textContent = `КОД ${game.room.id}`;
 
   const trump = document.querySelector('#trumpCard');
-  trump.innerHTML = game.trumpCard ? `${esc(game.trumpCard.rank)}${game.trumpCard.suit}<small>Козырь</small>` : '<small>Козырь</small>';
-  const trumpIsRed = Boolean(game.trumpCard && (game.trumpCard.suit === '♥' || game.trumpCard.suit === '♦'));
-  trump.classList.toggle('red', trumpIsRed);
-  trump.classList.toggle('dark', Boolean(game.trumpCard && !trumpIsRed));
+  trump.innerHTML = game.trumpCard ? cardHTML(game.trumpCard) : '';
+  trump.classList.toggle('empty', !game.trumpCard);
+  const deckBox = document.querySelector('#deckBox');
+  deckBox.classList.toggle('empty', !game.deck);
+  deckBox.style.setProperty('--depth', String(Math.max(2, Math.min(7, Math.round(game.deck / 4) + 1))));
   document.querySelector('#deckCount').textContent = game.deck;
 
   const table = document.querySelector('#tableCards');
@@ -607,7 +639,7 @@ function renderGame() {
     </div>
   `).join('');
 
-  const hand = sortHand(game.hand || []);
+  const hand = sortHand(game.hand || [], game.trump);
   const ranksOnTable = new Set();
   game.table.forEach(row => {
     ranksOnTable.add(row.attack.rank);
@@ -615,13 +647,13 @@ function renderGame() {
   });
   const attacking = Boolean(game.you && game.you.role === 'attacker');
   const dimmed = card => {
-    if (!(game.you && game.you.turn)) return true;
+    if (!(game.you && game.you.turn)) return false;
     if (attacking && game.table.length) return !ranksOnTable.has(card.rank);
     return false;
   };
   document.querySelector('#myHand').innerHTML = hand.map(card => {
     const red = card.suit === '♥' || card.suit === '♦';
-    return `<button class="hand-card ${red ? 'red' : ''} ${dimmed(card) ? 'dim' : ''}" data-card="${esc(card.id)}"><span class="hand-corner">${esc(card.rank)}<i>${card.suit}</i></span><span class="hand-suit">${card.suit}</span></button>`;
+    return `<button class="hand-card ${red ? 'red' : ''} ${dimmed(card) ? 'dim' : ''}" data-card="${esc(card.id)}">${cardCornersHTML(card)}</button>`;
   }).join('');
   document.querySelectorAll('.hand-card').forEach((button, index) => {
     button.setAttribute('aria-label', button.dataset.card);
@@ -639,7 +671,24 @@ function renderGame() {
     });
   }
   renderActions(game);
+  fitHand();
   renderFinish(game);
+}
+
+function fitHand() {
+  const hand = document.querySelector('#myHand');
+  if (!hand) return;
+  const cards = hand.querySelectorAll('.hand-card');
+  const cardWidth = cards.length ? cards[0].offsetWidth : 0;
+  if (cards.length < 2 || !cardWidth || !hand.clientWidth) {
+    hand.style.removeProperty('--overlap');
+    return;
+  }
+  const padding = (parseFloat(getComputedStyle(hand).paddingLeft) || 0) + (parseFloat(getComputedStyle(hand).paddingRight) || 0);
+  const available = hand.clientWidth - padding;
+  const needed = (cards.length * cardWidth - available) / (cards.length - 1);
+  const overlap = Math.max(0, Math.min(cardWidth - 26, Math.ceil(Math.max(needed, cardWidth * .1))));
+  hand.style.setProperty('--overlap', `${overlap}px`);
 }
 
 function renderActions(game) {
