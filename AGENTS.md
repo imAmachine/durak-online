@@ -147,23 +147,24 @@ Every lobby action (history, join by code, create) and the mode `.filter` live i
 the actions collapse into a two-column grid.
 
 Page backdrop: a fixed `.ambient` layer sits at `z-index: 0` behind `.app-shell` (`z-index: 1`).
-`startAmbient()` spawns random props into three depth layers: `.ambient-far` (dimmest, slowest),
-`.ambient-mid` (read through the frosted `.ambient-glass` pane with `backdrop-filter`), and
-`.ambient-near` (above the pane with a 1px blur, softened by `.ambient-haze` so suits stay
-readable, largest and fastest). Only the pane blurs the layers behind it, so no single card
-looks separately over-blurred. Faces are built with
+`startAmbient()` spawns random props into three depth layers: `.ambient-far` (dimmest, slowest,
+the only layer with its own blur), `.ambient-mid` (behind the frosted `.ambient-glass` pane), and
+`.ambient-near` (above the pane, sharp, softened by `.ambient-haze` so suits stay readable,
+largest and fastest). The pane keeps only a light `backdrop-filter` blur, so mid cards stay
+legible instead of reading as a full blur, and depth comes from tone, scale and speed. Faces are built with
 `cardCornersHTML()` inside a real `.card-face`, so corners, pips, courts and aces are the same as
 at the table; cards are rendered at their final size (never transform-scaled, which aliases the
 hairlines) with `--w` driving the card variables. Props are fully opaque and get depth from the
 pane's blur plus per-layer brightness (`--dim`) instead of alpha, so a nearer card occludes
 everything behind it. Any card-level filter sits on the card or chip itself, never on the drifting
 `.amb-prop`: the wrapper's box is smaller than the rotated card, so filtering it clipped the card.
-Every prop starts and ends fully offscreen (`ambDrift` starts at `-(--w + 6vw)`) and is
+Every prop starts and ends fully offscreen (`ambDrift` starts at `-(--w + 8vw)` and runs on a
+three-point arc so the path curves instead of tracking a straight diagonal) and is
 respawned on the drift's `animationiteration` (the handler checks `event.target` and
 `animationName`, because animation events bubble up from the swaying card) with a new random
 pattern, while `ambSway` adds rotation and a wobble in px on top of the drift. `.ambient-haze`
 carries the matte grain (`::after`, blended). The layer is `aria-hidden`, `pointer-events: none`,
-and becomes static under `prefers-reduced-motion` (`--rx` positions).
+and becomes static under `prefers-reduced-motion` (placed at the `--rx` / `--ry` percentages).
 Keep it purely decorative: no focusable or clickable content, and keep it behind all app content.
 
 The logo block (`.brand`) is locked against text selection and keeps the default cursor on

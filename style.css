@@ -136,16 +136,16 @@ a { color: var(--brass); text-underline-offset: 3px; }
   will-change: transform;
 }
 
-/* cards behind the pane get the pane's blur only, so none of them looks
-   separately over-blurred; depth comes from brightness, size and speed */
+/* Depth comes primarily from tone and scale. Only the distant layer receives
+   its own blur; the glass pane supplies a light shared softness behind it. */
 .ambient-far .amb-card,
-.ambient-far .amb-chip { filter: brightness(var(--dim, .35)) saturate(.85); }
+.ambient-far .amb-chip { filter: blur(1.5px) brightness(var(--dim, .35)) saturate(.85); }
 
 .ambient-mid .amb-card,
 .ambient-mid .amb-chip { filter: brightness(var(--dim, .46)) saturate(.95); }
 
 .ambient-near .amb-card,
-.ambient-near .amb-chip { filter: blur(1px) brightness(var(--dim, .62)) saturate(.95); }
+.ambient-near .amb-chip { filter: brightness(var(--dim, .62)) saturate(.95); }
 
 .amb-card,
 .amb-chip {
@@ -251,8 +251,10 @@ a { color: var(--brass); text-underline-offset: 3px; }
 .amb-chip--green { --chip-base: #2f6b4b; --chip-face: #0f2d21; --chip-ink: #e9c88f; }
 
 @keyframes ambDrift {
-  from { transform: translate3d(calc((var(--w, 160px) + 6vw) * -1), calc(34vh + var(--dy, 0vh)), 0); }
-  to { transform: translate3d(108vw, calc(-34vh + var(--dy, 0vh)), 0); }
+  0% { transform: translate3d(calc((var(--w, 160px) + 8vw) * -1), calc(30vh + var(--dy, 0vh)), 0); }
+  34% { transform: translate3d(28vw, calc(8vh + var(--dy, 0vh)), 0); }
+  68% { transform: translate3d(68vw, calc(-12vh + var(--dy, 0vh)), 0); }
+  100% { transform: translate3d(108vw, calc(-32vh + var(--dy, 0vh)), 0); }
 }
 
 @keyframes ambSway {
@@ -260,16 +262,18 @@ a { color: var(--brass); text-underline-offset: 3px; }
   to { transform: translate3d(var(--wobble-x, 20px), calc(var(--wobble-y, 12px) * -1), 0) rotate(calc(var(--tilt, 0deg) + var(--turn, 8deg))); }
 }
 
-/* the pane: far and mid props are read through this blur */
+/* The backdrop stays crisp; depth is controlled per object, not by a full-screen blur. */
 .ambient-glass {
   position: absolute;
   inset: 0;
+  border: 1px solid rgba(233, 200, 143, .06);
   background:
-    radial-gradient(120% 80% at 78% -20%, rgba(200, 160, 92, .14), transparent 60%),
-    radial-gradient(90% 70% at 6% 110%, rgba(36, 132, 90, .38), transparent 62%),
-    linear-gradient(180deg, rgba(10, 30, 20, .44), rgba(4, 15, 10, .58));
-  backdrop-filter: blur(20px) saturate(130%);
-  -webkit-backdrop-filter: blur(20px) saturate(130%);
+    linear-gradient(180deg, rgba(8, 18, 13, .72), rgba(4, 12, 8, .82)),
+    radial-gradient(120% 80% at 78% -20%, rgba(200, 160, 92, .11), transparent 60%),
+    radial-gradient(90% 70% at 6% 110%, rgba(36, 132, 90, .2), transparent 62%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035), inset 0 0 120px rgba(0, 0, 0, .18);
+  backdrop-filter: blur(4px) saturate(112%);
+  -webkit-backdrop-filter: blur(4px) saturate(112%);
 }
 
 /* surface frost and grain that sit over the near props */
@@ -295,9 +299,10 @@ a { color: var(--brass); text-underline-offset: 3px; }
 
 [data-theme="light"] .ambient-glass {
   background:
-    radial-gradient(120% 80% at 78% -20%, rgba(138, 103, 48, .12), transparent 60%),
-    radial-gradient(90% 70% at 6% 110%, rgba(70, 128, 96, .16), transparent 62%),
-    linear-gradient(180deg, rgba(244, 238, 227, .42), rgba(236, 229, 215, .6));
+    linear-gradient(180deg, rgba(244, 238, 227, .72), rgba(236, 229, 215, .84)),
+    radial-gradient(120% 80% at 78% -20%, rgba(138, 103, 48, .09), transparent 60%),
+    radial-gradient(90% 70% at 6% 110%, rgba(70, 128, 96, .12), transparent 62%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .45), inset 0 0 120px rgba(94, 74, 42, .08);
 }
 
 [data-theme="light"] .ambient-haze {
@@ -308,11 +313,13 @@ a { color: var(--brass); text-underline-offset: 3px; }
 }
 
 @media (max-width: 760px) {
-  .ambient-glass { backdrop-filter: blur(16px) saturate(120%); -webkit-backdrop-filter: blur(16px) saturate(120%); }
+  .ambient-glass { backdrop-filter: blur(3px) saturate(108%); -webkit-backdrop-filter: blur(3px) saturate(108%); }
   .ambient-far .amb-card,
-  .ambient-far .amb-chip { filter: brightness(var(--dim, .35)) saturate(.85); }
+  .ambient-far .amb-chip { filter: blur(1px) brightness(var(--dim, .35)) saturate(.85); }
+  .ambient-mid .amb-card,
+  .ambient-mid .amb-chip { filter: none; }
   .ambient-near .amb-card,
-  .ambient-near .amb-chip { filter: brightness(var(--dim, .62)) saturate(.95); }
+  .ambient-near .amb-chip { filter: none; }
 }
 .app-shell { display: flex; min-height: 100vh; position: relative; z-index: 1; }
 
@@ -2244,6 +2251,6 @@ a { color: var(--brass); text-underline-offset: 3px; }
     scroll-behavior: auto !important;
     transition-duration: .01ms !important;
   }
-  .amb-prop { left: var(--rx, 0%); animation: none; }
+  .amb-prop { left: var(--rx, 0%); top: var(--ry, 0%); animation: none; }
   .amb-card, .amb-chip { animation: none; }
 }

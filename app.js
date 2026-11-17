@@ -28,7 +28,8 @@ function readSessionToken() {
   }
   if (/^[a-f0-9]{64}$/.test(saved || '')) return saved;
   const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') crypto.getRandomValues(bytes);
+  else for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
   const token = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
   try {
     sessionStorage.setItem('durak.token', token);
@@ -386,8 +387,12 @@ async function joinRoom(code) {
 }
 
 function openGameView() {
+  if (state.game) {
+    state.autoOpen = false;
+    setView('game');
+    return;
+  }
   state.autoOpen = true;
-  if (state.game) setView('game');
 }
 
 /* create / join / history / rules / settings modals */
@@ -866,7 +871,7 @@ function cardCornersHTML(card) {
 
 function cardHTML(card, extraClass = '') {
   const red = card.suit === '♥' || card.suit === '♦';
-  return `<div class="card-face ${red ? 'red' : ''} ${extraClass}">${cardCornersHTML(card)}</div>`;
+  return `<div class="card-face ${red ? 'red' : ''} ${extraClass}" data-card-id="${esc(card.id)}">${cardCornersHTML(card)}</div>`;
 }
 
 function cardBackHTML(extraClass = '') {
@@ -877,7 +882,7 @@ function renderGame() {
   const game = state.game;
   if (!game) return;
   const previousHand = new Set([...document.querySelectorAll('.hand-card')].map(button => button.dataset.card));
-  const previousTable = new Set([...document.querySelectorAll('[data-target-card]')].map(card => card.dataset.targetCard));
+  const previousTable = new Set([...document.querySelectorAll('#tableCards [data-card-id]')].map(card => card.dataset.cardId));
   document.querySelector('#tableName').textContent = game.room.name;
   const modeLabel = game.room.mode === 'transfer' ? 'Переводной' : 'Подкидной';
   document.querySelector('#tableMode').textContent = `${modeLabel} · ${game.room.deckSize} карт${game.room.bet ? ` · ставка ${chips(game.room.bet)}` : ''}${game.trump ? ` · козырь ${game.trump}` : ''}`;
@@ -953,8 +958,8 @@ function renderGame() {
   });
 
   if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    table.querySelectorAll('[data-target-card]').forEach(card => {
-      if (!previousTable.has(card.dataset.targetCard)) card.animate([{ opacity: 0, transform: 'translateY(12px) rotate(-4deg)' }, { opacity: 1, transform: 'translateY(0) rotate(0)' }], { duration: 320, easing: 'cubic-bezier(.22,1,.36,1)' });
+    table.querySelectorAll('[data-card-id]').forEach(card => {
+      if (!previousTable.has(card.dataset.cardId)) card.animate([{ opacity: 0, transform: 'translateY(12px) rotate(-4deg)' }, { opacity: 1, transform: 'translateY(0) rotate(0)' }], { duration: 320, easing: 'cubic-bezier(.22,1,.36,1)' });
     });
   }
   renderActions(game);
@@ -1187,8 +1192,8 @@ function ambientObjectHTML(width) {
 }
 
 function ambientPropHTML(config, initial) {
-  const cap = Math.min(innerWidth * .3, config.width[1]);
-  const width = Math.round(randomBetween(Math.min(config.width[0], cap), cap));
+  const cap = Math.max(72, Math.min(innerWidth * .3, config.width[1]));
+  const width = Math.round(randomBetween(Math.min(config.width[0], cap), Math.max(config.width[0], cap)));
   const duration = randomBetween(config.duration[0], config.duration[1]);
   const style = [
     `--w:${width}px`,
@@ -1198,6 +1203,7 @@ function ambientPropHTML(config, initial) {
     `--delay:${(initial ? -randomBetween(0, duration) : 0).toFixed(1)}s`,
     `--dim:${Math.min(1, config.dim * randomBetween(.9, 1.1)).toFixed(2)}`,
     `--rx:${randomBetween(2, 82).toFixed(1)}%`,
+    `--ry:${randomBetween(2, 86).toFixed(1)}%`,
     `--tilt:${randomBetween(-22, 22).toFixed(1)}deg`,
     `--turn:${randomBetween(-22, 22).toFixed(1)}deg`,
     `--sway:${randomBetween(14, 30).toFixed(1)}s`,
