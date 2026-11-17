@@ -162,7 +162,13 @@ a { color: var(--brass); text-underline-offset: 3px; }
   gap: 14px;
   padding: 0 4px 34px;
   color: var(--ivory);
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
+
+.brand * { user-select: none; -webkit-user-select: none; }
 
 .brand-mark {
   display: grid;
