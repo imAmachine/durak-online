@@ -208,6 +208,7 @@ function settleAccounts(room, loserId) {
     if (loserId) room.lastPayouts[loserId] = -bet;
   }
   room.pot = 0;
+  room.players.forEach(player => pushAccount(player.id));
 }
 
 function finishGame(room, loser, message) {
@@ -423,7 +424,6 @@ function broadcastRoom(room) {
     const client = clients.get(player.id);
     if (!client) return;
     send(client, { type: 'game', state: gameState(room, player.id) });
-    pushAccount(player.id);
   });
   broadcastLobby();
 }
@@ -486,7 +486,10 @@ function act(client, data) {
     room.players = ready;
     startRound(room);
     chargeStakes(room);
-    if (room.bet) room.message += `. Банк ${room.pot} фишек`;
+    if (room.bet) {
+      room.message += `. Банк ${room.pot} фишек`;
+      room.players.forEach(player => pushAccount(player.id));
+    }
     broadcastRoom(room);
     return { ok: true };
   }
