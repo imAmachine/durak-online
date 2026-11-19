@@ -93,7 +93,7 @@ impl Config {
         }))
     }
 }
-fn random() -> Result<String, Response> {
+pub(crate) fn random() -> Result<String, Response> {
     let mut bytes = [0u8; 32];
     getrandom::getrandom(&mut bytes).map_err(|_| {
         error(
@@ -207,6 +207,9 @@ struct Token {
 #[derive(Deserialize)]
 struct Identity {
     id: String,
+    global_name: Option<String>,
+    username: String,
+    avatar: Option<String>,
 }
 pub async fn complete(State(state): State<AppState>, Json(body): Json<Completion>) -> Response {
     let (Some(config), Some(repository)) = (&state.oauth, &state.repository) else {
@@ -276,6 +279,33 @@ pub async fn complete(State(state): State<AppState>, Json(body): Json<Completion
         Ok(id) => id,
         Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно"),
     };
+    let name = identity
+        .global_name
+        .as_deref()
+        .unwrap_or(&identity.username)
+        .chars()
+        .take(20)
+        .collect::<String>();
+    let avatar_url = identity.avatar.as_deref().and_then(|avatar| {
+        if avatar.len() <= 128 && avatar.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')) {
+            Some(format!("https://cdn.discordapp.com/avatars/{}/{avatar}.png", identity.id))
+        } else {
+            None
+        }
+    });
+    let repository_guard = repository.lock().await;
+    let mut account = repository_guard
+        .load_account(&id)
+        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно"))
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| crate::game::Account::new(&id, &name));
+    account.name = name;
+    account.avatar_url = avatar_url;
+    if repository_guard.save_account(&account).is_err() {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно");
+    }
+    drop(repository_guard);
     sessions.insert(id.clone(), token.clone());
     if let Some(previous) = state.clients.write().await.remove(&id) {
         let _ = previous.sender.try_send(Ok(axum::response::sse::Event::default()

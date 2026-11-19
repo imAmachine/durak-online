@@ -1,6 +1,7 @@
 pub mod events;
 mod game;
 mod oauth;
+mod password;
 pub mod storage;
 
 use rusqlite::OptionalExtension;
@@ -30,6 +31,19 @@ use std::{
 };
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
+
+#[cfg(test)]
+pub(crate) const TEST_IDENTITIES: [&str; 5] = ["observer", "host", "guest", "profile-user", "third"];
+
+#[cfg(not(test))]
+pub(crate) fn seeded_test_identity(_id: &str) -> bool {
+    false
+}
+
+#[cfg(test)]
+pub(crate) fn seeded_test_identity(id: &str) -> bool {
+    TEST_IDENTITIES.contains(&id)
+}
 
 type SseResult = Result<Event, Infallible>;
 
@@ -67,23 +81,31 @@ impl AppState {
         #[cfg(test)]
         {
             let token = oauth::digest(&"a".repeat(64));
-            for id in ["observer", "host", "guest", "profile-user", "third"] {
+            for id in TEST_IDENTITIES {
                 let _ = repository.oauth_login(id, &format!("discord:{id}"), &token)?;
             }
         }
         let mut rooms = HashMap::new();
-        let mut accounts = HashMap::new();
+        let mut accounts = repository.list_accounts()?.into_iter().map(|account| (account.id.clone(), account)).collect::<HashMap<_, _>>();
         let mut seated = std::collections::HashSet::new();
         for saved in repository.list_transition_snapshots()? {
             let room: game::Room = serde_json::from_str(&saved.state_json)?;
             if room.state.status == durak_engine::Status::Playing {
                 for player in room.state.players.iter().filter(|p| !p.left) {
-                    #[cfg(test)]
-                    let linked = true;
-                    #[cfg(not(test))]
-                    let linked: bool = player.id.starts_with("discord:") && repository.connection().query_row(
-                        "SELECT EXISTS (SELECT 1 FROM oauth_identities WHERE provider='discord' AND client_id=?1)",
-                        [&player.id], |row| row.get(0))?;
+                    let linked: bool = if seeded_test_identity(&player.id) {
+                        true
+                    } else if player.id.starts_with("discord:") {
+                        repository.connection().query_row(
+                            "SELECT EXISTS (SELECT 1 FROM oauth_identities WHERE provider='discord' AND client_id=?1)",
+                            [&player.id], |row| row.get(0))?
+                    } else if let Some(stored) = player.id.strip_prefix("temp:").filter(|rest| !rest.is_empty()) {
+                        let stored_id = format!("temp:{stored}");
+                        repository.connection().query_row(
+                            "SELECT EXISTS (SELECT 1 FROM legacy_accounts WHERE client_id=?1 AND password_hash IS NOT NULL)",
+                            [&stored_id], |row| row.get(0))?
+                    } else {
+                        false
+                    };
                     if !linked {
                         return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("active room {} contains an unlinked player {}; administrator must migrate or cancel this room before startup", room.id, player.id)).into());
                     }
@@ -121,7 +143,7 @@ impl AppState {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct EventsQuery {
     id: Option<String>,
     token: Option<String>,
@@ -193,6 +215,7 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/api/auth/providers", get(auth_providers))
         .route("/api/auth/discord/start", post(oauth::start))
         .route("/api/auth/discord/complete", post(oauth::complete))
+        .route("/api/auth/temp/login", post(temp_login))
         .route("/readyz", get(readyz))
         .route("/api/watch", get(game::watch))
         .route("/api/rooms", post(game::create))
@@ -205,22 +228,85 @@ pub fn router_with_state(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn auth_providers(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let providers = if state.oauth.is_some() && state.repository.is_some() { vec!["discord"] } else { vec![] };
-    Json(json!({"providers": providers}))
+async fn auth_providers() -> Json<serde_json::Value> {
+    Json(json!({"providers": ["temporary"]}))
+}
+
+async fn temp_login(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let name = body.get("name").and_then(|value| value.as_str()).unwrap_or("").trim();
+    let password = body.get("password").and_then(|value| value.as_str()).unwrap_or("");
+    if name.is_empty() || name.chars().count() > 20 || password.len() < 4 || password.len() > 128 {
+        return error(StatusCode::BAD_REQUEST, "Укажите имя и пароль от 4 до 128 символов");
+    }
+    let repository = match &state.repository {
+        Some(repository) => repository,
+        None => return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно"),
+    };
+    let matches = |account: &game::Account| {
+        account.password_hash.as_deref().is_some_and(|stored| password::verify(password, stored))
+    };
+    let mut account = {
+        let accounts = state.accounts.read().await;
+        accounts
+            .values()
+            .find(|account| account.name.to_lowercase() == name.to_lowercase() && matches(account))
+            .cloned()
+            .map(|account| (account, false))
+    };
+    if account.is_none() {
+        let stored = repository.lock().await.list_accounts().unwrap_or_default();
+        account = stored
+            .into_iter()
+            .find(|account| account.name.to_lowercase() == name.to_lowercase() && matches(account))
+            .map(|account| {
+                let upgrade = password::needs_upgrade(account.password_hash.as_deref().unwrap_or_default());
+                (account, upgrade)
+            });
+    }
+    let Some((stored, upgrade)) = account else {
+        password::burn(password);
+        return error(StatusCode::FORBIDDEN, "Неверное имя или пароль");
+    };
+    let password_hash = if upgrade { password::hash(password) } else { stored.password_hash.clone().unwrap_or_default() };
+    let account = game::Account { password_hash: Some(password_hash.clone()), ..stored };
+    let token = match oauth::random() { Ok(token) => oauth::digest(&token), Err(response) => return response };
+    {
+        let mut repository = repository.lock().await;
+        if repository.finish_temp_login(&account.id, &oauth::digest(&token), &password_hash).is_err() {
+            return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно");
+        }
+        if repository.save_account(&account).is_err() {
+            return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно");
+        }
+    }
+    state.accounts.write().await.insert(account.id.clone(), account.clone());
+    state.sessions.write().await.insert(account.id.clone(), token.clone());
+    state.clients.write().await.remove(&account.id);
+    Json(json!({"clientId": account.id, "token": token})).into_response()
 }
 
 pub(crate) async fn verified_identity(repository: &Arc<Mutex<storage::Repository>>, id: &str, digest: &str) -> Result<bool, ()> {
-    let mapped_id = if cfg!(test) && !id.starts_with("discord:") { format!("discord:{id}") } else { id.to_owned() };
-    if !mapped_id.starts_with("discord:") {
+    let mapped_id = if cfg!(test) && seeded_test_identity(id) { format!("discord:{id}") } else { id.to_owned() };
+    if !mapped_id.starts_with("discord:") && !mapped_id.starts_with("temp:") {
         return Ok(false);
     }
     let repository = repository.lock().await;
-    let mapped: rusqlite::Result<Option<String>> = repository.connection().query_row(
-        "SELECT oi.client_id FROM oauth_identities oi JOIN legacy_identity li ON li.client_id = oi.client_id WHERE oi.provider='discord' AND oi.client_id=?1 AND li.token_hash=?2",
-        rusqlite::params![mapped_id, digest],
-        |row| row.get(0),
-    ).optional();
+    let mapped: rusqlite::Result<Option<String>> = if mapped_id.starts_with("discord:") {
+        repository.connection().query_row(
+            "SELECT oi.client_id FROM oauth_identities oi JOIN legacy_identity li ON li.client_id = oi.client_id WHERE oi.provider='discord' AND oi.client_id=?1 AND li.token_hash=?2",
+            rusqlite::params![mapped_id, digest],
+            |row| row.get(0),
+        ).optional()
+    } else {
+        repository.connection().query_row(
+            "SELECT client_id FROM legacy_identity WHERE client_id=?1 AND token_hash=?2",
+            rusqlite::params![mapped_id, digest],
+            |row| row.get(0),
+        ).optional()
+    };
     mapped.map(|value| value.is_some()).map_err(|_| ())
 }
 
@@ -228,8 +314,8 @@ async fn events(
     State(state): State<AppState>,
     Query(query): Query<EventsQuery>,
 ) -> Result<impl IntoResponse, Response> {
-    let id = query.id.filter(|value| is_client_id(value));
-    let token = query.token.filter(|value| is_token(value));
+    let id = query.id.as_deref().filter(|value| is_client_id(value)).map(str::to_owned);
+    let token = query.token.as_deref().filter(|value| is_token(value)).map(str::to_owned);
     let (Some(id), Some(token)) = (id, token) else {
         return Err(error(
             StatusCode::BAD_REQUEST,
@@ -242,7 +328,10 @@ async fn events(
         let Some(repository) = &state.repository else {
             return Err(error(StatusCode::FORBIDDEN, "Неверный токен сессии"));
         };
-        let verified_id = if cfg!(test) && !id.starts_with("discord:") { format!("discord:{id}") } else { id.clone() };
+        let verified_id = if cfg!(test) && seeded_test_identity(&id) { format!("discord:{id}") } else { id.clone() };
+        if verified_id.starts_with("discord:") && state.oauth.is_none() && !(cfg!(test) && seeded_test_identity(&id)) {
+            return Err(error(StatusCode::FORBIDDEN, "Неверный токен сессии"));
+        }
         match verified_identity(repository, &verified_id, &oauth::digest(&token)).await {
             Ok(true) => {}
             Ok(false) => return Err(error(StatusCode::FORBIDDEN, "Неверный токен сессии")),
@@ -342,6 +431,8 @@ async fn route(uri: Uri) -> Response {
     }
     let (file, mime) = match path {
         "/" | "/index.html" => ("index.html", "text/html"),
+        "/admin" => ("admin.html", "text/html"),
+        "/admin.html" => ("admin.html", "text/html"),
         "/app.js" => ("app.js", "application/javascript"),
         "/style.css" => ("style.css", "text/css"),
         _ => return error(StatusCode::NOT_FOUND, "Not found"),
@@ -354,7 +445,10 @@ async fn route(uri: Uri) -> Response {
 }
 
 fn is_client_id(value: &str) -> bool {
-    !value.is_empty()
+    if cfg!(test) && !value.is_empty() {
+        return true;
+    }
+    (value.starts_with("discord:") || value.starts_with("temp:")) && value.len() <= 128
 }
 fn is_token(value: &str) -> bool {
     value.len() == 64
@@ -408,6 +502,50 @@ mod tests {
         assert!(response.status().is_success(), "{}", response.status());
         let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn admin_creates_rotates_and_deletes_temporary_accounts() {
+        std::env::set_var("ADMIN_KEY", "panel-secret");
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("admin.sqlite");
+        let migrations = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let state = AppState::with_repository(storage::Repository::open(&path, &migrations).unwrap()).unwrap();
+        let app = router_with_state(state.clone());
+        let created = post(&app, "/api/admin", json!({"key":"panel-secret","op":"create_temp","name":"Гость","password":"первый-пароль"})).await;
+        let id = created["account"]["id"].as_str().unwrap().to_owned();
+        let stored = state.repository.as_ref().unwrap().lock().await.load_account(&id).unwrap().unwrap();
+        let hash = stored.password_hash.clone().unwrap();
+        assert!(hash.starts_with("pbkdf2_sha256$") && !hash.contains("первый-пароль"));
+        let login = post(&app, "/api/auth/temp/login", json!({"name":"гость","password":"первый-пароль"})).await;
+        assert_eq!(login["clientId"], id);
+        let token = login["token"].as_str().unwrap().to_owned();
+        let stream = app.clone().oneshot(Request::get(format!("/events?id={id}&token={token}&name=Гость"))
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(stream.status(), StatusCode::OK);
+        let changed = post(&app, "/api/admin", json!({"key":"panel-secret","op":"update","id":id,"password":"второй-пароль"})).await;
+        assert_eq!(changed["sessionRevoked"], true);
+        assert!(!state.sessions.read().await.contains_key(&id));
+        assert!(state.clients.read().await.contains_key(&id));
+        let stale = app.clone().oneshot(Request::post("/api/auth/temp/login").header("content-type","application/json")
+            .body(Body::from(json!({"name":"Гость","password":"первый-пароль"}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(stale.status(), StatusCode::FORBIDDEN);
+        let list = post(&app, "/api/admin", json!({"key":"panel-secret","op":"list"})).await;
+        let row = list["players"].as_array().unwrap().iter().find(|p| p["id"] == id.as_str()).cloned().unwrap();
+        assert_eq!(row["kind"], "temp");
+        assert_eq!(row["hasPassword"], true);
+        let deleted = post(&app, "/api/admin", json!({"key":"panel-secret","op":"delete","id":id})).await;
+        assert_eq!(deleted["deleted"], id.as_str());
+        assert!(!state.accounts.read().await.contains_key(&id));
+        assert!(state.repository.as_ref().unwrap().lock().await.load_account(&id).unwrap().is_none());
+        assert!(state.sessions.read().await.is_empty());
+        let rejected = app.clone().oneshot(Request::post("/api/admin").header("content-type","application/json")
+            .body(Body::from(json!({"key":"panel-secret","op":"delete","id":id}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(rejected.status(), StatusCode::NOT_FOUND);
+        let wrong = app.clone().oneshot(Request::post("/api/auth/temp/login").header("content-type","application/json")
+            .body(Body::from(json!({"name":"Гость","password":"второй-пароль"}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(wrong.status(), StatusCode::FORBIDDEN);
+        std::env::remove_var("ADMIN_KEY");
     }
 
     #[tokio::test]
@@ -587,6 +725,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_player_name_from_client_does_not_rename_account() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("names.sqlite");
+        let migrations = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let state = AppState::with_repository(storage::Repository::open(&path, &migrations).unwrap()).unwrap();
+        let app = router_with_state(state.clone());
+        let host = open_events(&app, "host").await;
+        let guest = open_events(&app, "guest").await;
+        let token = "a".repeat(64);
+        let created = post(&app, "/api/rooms", json!({"clientId":"host","token":token,"name":"Стол","playerName":"Игрок"})).await;
+        let code = created["code"].as_str().unwrap().to_owned();
+        post(&app, "/api/join", json!({"clientId":"guest","token":token,"roomId":code,"playerName":"Игрок"})).await;
+        assert_eq!(state.accounts.read().await["host"].name, "host");
+        assert_eq!(state.accounts.read().await["guest"].name, "guest");
+        assert_eq!(state.repository.as_ref().unwrap().lock().await.load_account("guest").unwrap().unwrap().name, "guest");
+        drop(host);
+        drop(guest);
+    }
+
+    #[tokio::test]
     async fn player_can_rejoin_finished_room_and_recover_after_restart() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("rejoin.sqlite");
@@ -716,7 +874,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let migrations = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
         let mut repo = storage::Repository::open(dir.path().join("orphan.sqlite"), &migrations).unwrap();
-        let room = game::Room { id: "ORPHAN".into(), name: "Locked stakes".into(), mode: durak_engine::Mode::Classic, deck_size: durak_engine::DeckSize::ThirtySix, bet: 50, host: "legacy".into(), state: durak_engine::DurakState::new(vec!["legacy".into(), "discord:ok".into()], durak_engine::Mode::Classic, durak_engine::DeckSize::ThirtySix), seq: 1, events: vec![json!({"seq":1})], pot: 100, payouts: HashMap::new(), message: "playing".into() };
+        let room = game::Room { id: "ORPHAN".into(), name: "Locked stakes".into(), mode: durak_engine::Mode::Classic, deck_size: durak_engine::DeckSize::ThirtySix, bet: 50, host: "discord:legacy".into(), state: durak_engine::DurakState::new(vec!["discord:legacy".into(), "discord:ok".into()], durak_engine::Mode::Classic, durak_engine::DeckSize::ThirtySix), seq: 1, events: vec![json!({"seq":1})], pot: 100, payouts: HashMap::new(), message: "playing".into() };
         let transition = storage::DurableTransition { game_id: "ORPHAN".into(), expected_seq: None, seq: 0, state_json: serde_json::to_string(&room).unwrap(), accounts: vec![] };
         repo.commit_transition(&transition).unwrap();
         let result = AppState::with_repository(repo);
