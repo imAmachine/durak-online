@@ -385,6 +385,13 @@ impl Repository {
         self.connection.query_row("SELECT seq,state_json FROM durable_game_states WHERE game_id=?1", [game_id], |r| Ok((r.get(0)?,r.get(1)?))).optional()
     }
 
+    pub(crate) fn delete_transition(&mut self, game_id: &str) -> SqlResult<()> {
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute("DELETE FROM durable_game_transitions WHERE game_id=?1", [game_id])?;
+        tx.execute("DELETE FROM durable_game_states WHERE game_id=?1", [game_id])?;
+        tx.commit()
+    }
+
     pub fn save_match_state(&mut self, state: &MatchState) -> StorageResult<()> {
         self.save_match(&MatchWrite {
             state: state.clone(),

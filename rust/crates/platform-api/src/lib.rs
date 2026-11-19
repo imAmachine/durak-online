@@ -61,6 +61,7 @@ pub struct AppState {
     clients: Arc<RwLock<HashMap<String, ClientEntry>>>,
     rooms: Arc<RwLock<HashMap<String, game::Room>>>,
     accounts: Arc<RwLock<HashMap<String, game::Account>>>,
+    pub(crate) offline_rooms: Arc<RwLock<HashMap<String, u64>>>,
     pub event_hub: events::EventHub,
     next_client_generation: Arc<AtomicU64>,
     repository: Option<Arc<Mutex<storage::Repository>>>,
@@ -136,6 +137,7 @@ impl AppState {
         Ok(Self {
             rooms: Arc::new(RwLock::new(rooms)),
             accounts: Arc::new(RwLock::new(accounts)),
+            offline_rooms: Arc::new(RwLock::new(HashMap::new())),
             repository: Some(Arc::new(Mutex::new(repository))),
             ready: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             ..Self::default()
@@ -209,6 +211,7 @@ pub fn router() -> Router {
 }
 
 pub fn router_with_state(state: AppState) -> Router {
+    game::start_cleanup(state.clone());
     Router::new()
         .route("/events", get(events))
         .route("/api/status", get(status))
@@ -223,6 +226,7 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/api/action", post(game::action))
         .route("/api/leave", post(game::leave))
         .route("/api/profile", post(game::profile))
+        .route("/api/player-profile", post(game::player_profile))
         .route("/api/admin", post(game::admin))
         .fallback(any(route))
         .with_state(state)
@@ -502,6 +506,41 @@ mod tests {
         assert!(response.status().is_success(), "{}", response.status());
         let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn player_profile_only_shares_stats_with_tablemates() {
+        let directory = tempdir().unwrap();
+        let migrations = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let repository = storage::Repository::open(directory.path().join("profiles.sqlite"), migrations).unwrap();
+        let state = AppState::with_repository(repository).unwrap();
+        let app = router_with_state(state.clone());
+        let _host = open_events(&app, "host").await;
+        let _guest = open_events(&app, "guest").await;
+        let _third = open_events(&app, "third").await;
+        let token = "a".repeat(64);
+        let room = post(&app, "/api/rooms", json!({"clientId":"host","token":token})).await;
+        let code = room["code"].as_str().unwrap();
+        post(&app, "/api/join", json!({"clientId":"guest","token":token,"roomId":code})).await;
+        {
+            let mut accounts = state.accounts.write().await;
+            let guest = accounts.get_mut("guest").unwrap();
+            guest.balance = 0;
+            guest.games = 5;
+            guest.wins = 2;
+            guest.losses = 3;
+        }
+        let stats = post(&app, "/api/player-profile", json!({"clientId":"host","token":token,"roomId":code,"playerId":"guest"})).await;
+        assert_eq!(stats, json!({"balance":0,"games":5,"wins":2,"losses":3}));
+        for (viewer, viewer_token, player, status) in [
+            ("third", token.clone(), "guest", StatusCode::NOT_FOUND),
+            ("host", token, "third", StatusCode::NOT_FOUND),
+            ("host", "b".repeat(64), "guest", StatusCode::FORBIDDEN),
+        ] {
+            let request = Request::post("/api/player-profile").header("content-type", "application/json")
+                .body(Body::from(json!({"clientId":viewer,"token":viewer_token,"roomId":code,"playerId":player}).to_string())).unwrap();
+            assert_eq!(app.clone().oneshot(request).await.unwrap().status(), status);
+        }
     }
 
     #[tokio::test]

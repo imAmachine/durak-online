@@ -39,6 +39,11 @@ const state = {
   source: null,
   connected: false,
   actionPending: false,
+  leavingRoom: false,
+  lastEventSeq: 0,
+  lastEventRoom: null,
+  renderedGame: null,
+  suppressClick: false,
 };
 
 function loadProfile() {
@@ -726,10 +731,8 @@ function adminApi(payload) {
   return api('/api/admin', { key: adminKey(), ...payload });
 }
 
-if (adminPage) {
-  bootstrapAdminPage();
-} else {
-  if (new URL(location.href).searchParams.get('admin') === '1') location.replace(adminKey() ? '/admin' : '/admin.html');
+if (!adminPage && new URL(location.href).searchParams.get('admin') === '1') {
+  location.replace(adminKey() ? '/admin' : '/admin.html');
 }
 
 function bootstrapAdminPage() {
@@ -798,10 +801,11 @@ async function loadAdminPlayers() {
     adminState.players = data.players || [];
   } catch (error) {
     toast(error.message);
-    if (/ключ/i.test(error.message)) return signOutAdmin();
+    if (/ключ/i.test(error.message)) signOutAdmin();
+  } finally {
+    adminState.loading = false;
+    renderAdminPage();
   }
-  adminState.loading = false;
-  renderAdminPage();
 }
 
 function signOutAdmin() {
@@ -1254,9 +1258,33 @@ function bindAdminPage() {
   const exit = document.querySelector('#adminExit');
   if (exit) exit.addEventListener('click', signOutAdmin);
 }
-if (adminPage) bindAdminPage();
+if (adminPage) {
+  bindAdminPage();
+  bootstrapAdminPage();
+}
 
 /* navigation */
+function openPlayerPreview(player) {
+  const role = player.left ? 'Покинул стол' : player.finished ? 'Закончил игру' : player.role === 'attacker' ? 'Атакует' : player.role === 'defender' ? 'Защищается' : 'За столом';
+  openModal(`
+    <div class="profile-preview">
+      ${avatarHTML(player, 'profile-avatar')}
+      <h2>${esc(player.name)}</h2>
+      <p class="modal-subtitle">${role} · ${player.connected ? 'онлайн' : 'не в сети'}</p>
+      <div class="profile-facts">${Number(player.cards)} ${cardsWord(player.cards)} в руке</div>
+      <p class="modal-subtitle" data-player-stats role="status">Загружаем статистику…</p>
+    </div>
+  `, async body => {
+    const stats = body.querySelector('[data-player-stats]');
+    try {
+      const profile = await api('/api/player-profile', { clientId, roomId: state.game.room.id, playerId: player.id });
+      stats.textContent = `Баланс: ${chips(profile.balance)} фишек. Партий: ${chips(profile.games)} · Побед: ${chips(profile.wins)} · Поражений: ${chips(profile.losses)}`;
+    } catch {
+      stats.textContent = 'Не удалось загрузить баланс и статистику';
+    }
+  });
+}
+
 if (!adminPage) {
   document.querySelector('#cabinetBack').addEventListener('click', () => setView('lobby'));
   new ResizeObserver(() => {
@@ -1301,6 +1329,8 @@ function setView(view) {
   if (gameActive) {
     fitHand();
     fitTable();
+  } else {
+    cancelCardDrag();
   }
   if (view === 'lobby') renderLobby();
   if (view === 'cabinet') renderCabinet();
@@ -1324,7 +1354,14 @@ function updateResumeButton() {
 }
 
 /* game */
-if (document.querySelector('#retryConnection')) document.querySelector('#retryConnection').addEventListener('click', connect);
+function setRetryConnection(visible) {
+  const button = document.querySelector('#retryConnection');
+  if (button) button.hidden = !visible;
+}
+if (document.querySelector('#retryConnection')) document.querySelector('#retryConnection').addEventListener('click', () => {
+  setRetryConnection(false);
+  connect();
+});
 
 async function restoreLeftSeat() {
   if (!state.game || !state.game.room || state.game.room.status !== 'playing') return false;
@@ -1342,7 +1379,10 @@ async function rejoinRoom(roomId) {
   try {
     const data = await api('/api/join', { clientId, roomId });
     if (data.account) state.account = data.account;
-    if (!data.room || data.room.status !== 'playing') return false;
+    if (!data.room || data.room.status !== 'playing') {
+      forgetSeatRoom();
+      return false;
+    }
     const room = data.room.id;
     rememberSeatRoom(room);
     state.autoOpen = true;
@@ -1390,8 +1430,10 @@ function roomSeq(roomId) {
       resolve(value);
     };
     const timer = setTimeout(() => finish(null), 400);
-    if (state.source && state.source.readyState === EventSource.OPEN) finish(Number(state.lobby && state.lobby.streamSeq) || 0);
-    else if (state.source) state.source.addEventListener('open', () => finish(Number(state.lobby && state.lobby.streamSeq) || 0), { once: true });
+    const current = state.game && state.game.room && state.game.room.id === roomId ? Number(state.game.seq) || 0 : 0;
+    if (current) finish(current);
+    else if (state.source && state.source.readyState === EventSource.OPEN) finish(0);
+    else if (state.source) state.source.addEventListener('open', () => finish(0), { once: true });
     else finish(null);
   });
 }
@@ -1414,6 +1456,10 @@ function showAbandonedRoom(restored) {
   if (restored) toast('Вы вернулись за стол');
   else toast('Лобби больше не существует');
 }
+
+window.addEventListener('pagehide', () => {
+  if (state.source) state.source.close();
+});
 
 function connect() {
   if (!clientId || !sessionToken) return;
@@ -1445,7 +1491,13 @@ function connect() {
       const incomingSeq = Number(payload.state && payload.state.seq) || 0;
       const currentSeq = Number(state.game && state.game.seq) || 0;
       if (state.game && payload.state && payload.state.room && state.game.room && payload.state.room.id === state.game.room.id && incomingSeq < currentSeq) return;
+      if (state.leavingRoom) return;
       state.game = payload.state;
+      if (state.actionPending && incomingSeq > state.actionPendingSeq) {
+        state.actionPending = false;
+        state.actionPendingSeq = 0;
+        document.querySelector('#gameScreen').setAttribute('aria-busy', 'false');
+      }
       if (state.autoOpen) {
         state.autoOpen = false;
         setView('game');
@@ -1461,6 +1513,14 @@ function connect() {
       sessionStorage.removeItem('durak.token');
       location.reload();
     } else if (payload.type === 'noroom') {
+      if (state.leavingRoom) {
+        state.game = null;
+        state.restoreJoin = null;
+        forgetSeatRoom();
+        document.querySelector('#finishOverlay').classList.remove('open');
+        setView('lobby');
+        return;
+      }
       if (state.game || state.restoreJoin) {
         const restored = await restoreLeftSeat();
         state.game = null;
@@ -1485,6 +1545,7 @@ function connect() {
     state.connected = false;
     document.querySelector('#connectionStatus').textContent = 'Связь потеряна. Переподключаемся…';
     document.querySelector('#connectionStatus').dataset.status = 'offline';
+    document.querySelector('#retryConnection').hidden = true;
     renderLobby();
   };
 }
@@ -1518,8 +1579,8 @@ function cardBodyHTML(card) {
   return `<span class="card-pips">${pips.map(([row, column]) => `<i style="grid-area:${row}/${column}">${card.suit}</i>`).join('')}</span>`;
 }
 
-function cardCornersHTML(card) {
-  const faceRank = 'ВДКТ'.includes(card.rank);
+function cardCornersHTML(card, showSuit = false) {
+  const faceRank = showSuit || 'ВДКТ'.includes(card.rank);
   const corner = `<span class="card-corner">${esc(card.rank)}${faceRank ? `<i>${card.suit}</i>` : ''}</span>`;
   return `${corner}${cardBodyHTML(card)}<span class="card-corner bottom" aria-hidden="true">${esc(card.rank)}${faceRank ? `<i>${card.suit}</i>` : ''}</span>`;
 }
@@ -1533,53 +1594,302 @@ function cardBackHTML(extraClass = '') {
   return `<span class="card-back ${extraClass}" aria-hidden="true"><i></i><b>♠</b></span>`;
 }
 
+function roleIcon(role) {
+  if (role === 'attacker') return '<svg class="role-icon attacker-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l7-7 5-1-1 5-7 7Z"/><path d="m7 9 8 8m-4-4-6 6m-2-2 4 4"/></svg>';
+  if (role === 'defender') return '<svg class="role-icon defender-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3 22 6v5c0 5-3 8-7 10-4-2-7-5-7-10V6l7-3Z"/><path d="m3 6 2 2M2 11h3m-2 5 2-2"/></svg>';
+  return '';
+}
+
+function flyCard(node, from) {
+  if (!node || !from || !from.width) return;
+  const to = node.getBoundingClientRect();
+  if (!to.width) return;
+  const dx = from.left + from.width / 2 - (to.left + to.width / 2);
+  const dy = from.top + from.height / 2 - (to.top + to.height / 2);
+  const scale = Math.max(.3, Math.min(1, from.width / to.width));
+  node.animate([
+    { translate: `${dx}px ${dy}px`, scale: `${scale}`, opacity: .35 },
+    { translate: '0 0', scale: '1', opacity: 1 }
+  ], { duration: 380, easing: 'cubic-bezier(.22,1,.36,1)' });
+}
+
+function animateCardFlight(ghost, from, to, delay, duration, waitingOpacity) {
+  if (!from?.width || !to?.width) return;
+  ghost.classList.add('card-ghost');
+  ghost.setAttribute('aria-hidden', 'true');
+  Object.assign(ghost.style, { left: `${from.left}px`, top: `${from.top}px`, width: `${from.width}px`, height: `${from.height}px` });
+  document.body.appendChild(ghost);
+  const dx = to.left - from.left + (to.width - from.width) / 2;
+  const dy = to.top - from.top + (to.height - from.height) / 2;
+  const animation = ghost.animate([
+    { translate: '0 0', opacity: waitingOpacity, offset: 0 },
+    { translate: '0 0', opacity: 1, offset: .04 },
+    { translate: `${dx}px ${dy}px`, scale: .36, opacity: 1, offset: .86 },
+    { translate: `${dx}px ${dy}px`, scale: .25, opacity: 0 }
+  ], { duration, delay, fill: 'backwards', easing: 'cubic-bezier(.35,0,.3,1)' });
+  animation.onfinish = animation.oncancel = () => ghost.remove();
+}
+
+function roundRefills(previous, game) {
+  if (previous.deck <= game.deck) return [];
+  const first = previous.players.findIndex(player => player.id === (previous.trickAttackerId || previous.attackerId));
+  const start = Math.max(0, first);
+  const order = previous.players.slice(start).concat(previous.players.slice(0, start));
+  const defender = order.find(player => player.id === previous.defenderId);
+  const taken = previous.takePending ? previous.table.reduce((total, row) => total + 1 + Number(Boolean(row.defense)), 0) : 0;
+  return [...order.filter(player => player !== defender), ...(defender ? [defender] : [])].flatMap(player => {
+    const current = game.players.find(item => item.id === player.id);
+    const count = (current?.cards ?? player.cards) - player.cards - (player === defender ? taken : 0);
+    return count > 0 ? [{ id: player.id, count }] : [];
+  });
+}
+
+function animateDeal(game, source, handRoot, seatRoot) {
+  if (!source.width) return;
+  const targets = new Map([...seatRoot.querySelectorAll('.seat')].map(seat => [seat.dataset.seat, seat.querySelectorAll('.opponent-fan .card-back')]));
+  targets.set(game.you?.id, handRoot.querySelectorAll('.hand-card'));
+  const handBounds = handRoot.getBoundingClientRect();
+  let delay = 0;
+  for (let round = 0; round < 6; round += 1) {
+    for (const player of game.players) {
+      const card = targets.get(player.id)?.[round];
+      if (!card) continue;
+      const target = card.getBoundingClientRect();
+      const visible = player.id !== game.you?.id || (target.right > handBounds.left && target.left < handBounds.right);
+      if (target.width && visible) {
+        const ghost = document.createElement('span');
+        ghost.className = 'card-back';
+        animateCardFlight(ghost, source, target, delay, 420, 0);
+        card.animate([{ opacity: 0 }, { opacity: 1 }], { delay: delay + 360, duration: 60, fill: 'backwards' });
+      }
+      delay += 90;
+    }
+  }
+}
+
+function animateRoundEnd(previous, game, cards, source, handRoot, seatRoot) {
+  const targets = new Map([...seatRoot.querySelectorAll('.seat')].map(seat => [seat.dataset.seat, seat.getBoundingClientRect()]));
+  targets.set(game.you?.id, handRoot.querySelector('.hand-slot:last-child')?.getBoundingClientRect() || handRoot.getBoundingClientRect());
+  const destination = previous.takePending ? targets.get(previous.defenderId) : { left: innerWidth / 2, top: -120, width: 1, height: 1 };
+  const sweepDuration = 520;
+  const sweepStep = 45;
+  cards.forEach(({ node, box, cardWidth }, index) => {
+    const ghost = node.cloneNode(true);
+    ghost.style.setProperty('--card-w', `${cardWidth}px`);
+    ghost.style.setProperty('--card-h', `${cardWidth * 1.39}px`);
+    ghost.style.setProperty('--corner-size', `${cardWidth * .3}px`);
+    ghost.style.setProperty('--pip-size', `${cardWidth * .21}px`);
+    ghost.style.setProperty('--ace-size', `${cardWidth * .6}px`);
+    ghost.style.setProperty('--court-size', `${cardWidth * .46}px`);
+    ghost.style.setProperty('--def-x', `${cardWidth * .34}px`);
+    ghost.style.setProperty('--def-y', `${cardWidth * .26}px`);
+    animateCardFlight(ghost, box, destination, index * sweepStep, sweepDuration, 1);
+  });
+  let delay = sweepDuration + Math.max(0, cards.length - 1) * sweepStep;
+  for (const { id, count } of roundRefills(previous, game)) {
+    for (let index = 0; index < count; index += 1) {
+      const ghost = document.createElement('span');
+      ghost.className = 'card-back';
+      animateCardFlight(ghost, source, targets.get(id), delay + index * 80, 400, 0);
+    }
+    delay += 400 + (count - 1) * 80 + 120;
+  }
+}
+
+let cardDrag = null;
+
+function canTransferCard(game, card) {
+  return game.canTransfer && game.table[0]?.attack.rank === card.rank;
+}
+
+function tableDropMode(game, card) {
+  if (game.you.role === 'defender') return canTransferCard(game, card) ? 'transfer' : null;
+  if (!game.canAttack) return null;
+  return !game.table.length || game.table.some(row => row.attack.rank === card.rank || row.defense?.rank === card.rank) ? 'attack' : null;
+}
+
+function dragMode(card, element) {
+  const game = state.game;
+  if (!game?.you?.turn || state.actionPending) return null;
+  const pair = element?.closest('#tableCards .pair');
+  const zone = element?.closest('#tableDropZone');
+  if (game.you.role === 'defender' && pair) {
+    const row = game.table.find(row => row.attack.id === pair.dataset.attack);
+    if (game.canDefend && row && !row.defense && beats(row.attack, card, game.trump)) {
+      return { mode: 'defend', row: row.attack.id, node: pair };
+    }
+  }
+  const mode = tableDropMode(game, card);
+  return mode && (zone || (mode === 'attack' && pair))
+    ? { mode, node: document.querySelector('#tableDropZone') }
+    : null;
+}
+
+function updateDragTarget(clientX, clientY) {
+  const { card, zone, target } = cardDrag;
+  const game = state.game;
+  const mode = game?.you?.turn && !state.actionPending ? tableDropMode(game, card) : null;
+  if (zone.dataset.mode !== (mode || '')) {
+    zone.dataset.mode = mode || '';
+    zone.textContent = mode === 'transfer' ? 'Перевести ход' : game.table.length ? 'Подкинуть карту' : 'Сыграть карту';
+    zone.hidden = !mode;
+    zone.setAttribute('aria-hidden', String(!mode));
+  }
+  const next = dragMode(card, document.elementFromPoint(clientX, clientY));
+  if (target?.node !== next?.node) {
+    target?.node.classList.remove('drop-target');
+    next?.node.classList.add('drop-target');
+  }
+  cardDrag.target = next;
+}
+
+function moveCardDrag(event) {
+  const drag = cardDrag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  const dx = event.clientX - drag.startX;
+  const dy = event.clientY - drag.startY;
+  if (!drag.ghost) {
+    if (Math.hypot(dx, dy) < 7) return;
+    const ghost = document.createElement('div');
+    ghost.className = `hand-card drag-ghost${drag.button.classList.contains('red') ? ' red' : ''}`;
+    ghost.setAttribute('aria-hidden', 'true');
+    ghost.innerHTML = drag.button.innerHTML;
+    const styles = getComputedStyle(drag.button);
+    const slot = drag.button.parentElement.getBoundingClientRect();
+    ghost.style.width = styles.width;
+    ghost.style.height = styles.height;
+    ghost.style.setProperty('--card-w', styles.getPropertyValue('--card-w'));
+    drag.scale = slot.width / parseFloat(styles.width);
+    drag.grabX = (drag.startX - drag.box.left) * slot.width / drag.box.width;
+    drag.grabY = (drag.startY - drag.box.top) * slot.height / drag.box.height;
+    drag.ghost = ghost;
+    document.body.appendChild(ghost);
+    document.body.classList.add('is-dragging');
+    drag.button.classList.add('drag-source');
+  }
+  if (event.cancelable) event.preventDefault();
+  drag.ghost.style.transform = `translate3d(${event.clientX - drag.grabX}px, ${event.clientY - drag.grabY}px, 0) scale(${drag.scale})`;
+  drag.clientX = event.clientX;
+  drag.clientY = event.clientY;
+  updateDragTarget(drag.clientX, drag.clientY);
+}
+
+function endCardDrag(event) {
+  const drag = cardDrag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  const target = drag.ghost && dragMode(drag.card, document.elementFromPoint(event.clientX, event.clientY));
+  cancelCardDrag(event);
+  if (!drag.ghost) return;
+  state.suppressClick = true;
+  setTimeout(() => { state.suppressClick = false; }, 0);
+  if (target) act(target.mode, drag.card.id, target.row);
+}
+
+function cancelCardDrag(event) {
+  const drag = cardDrag;
+  if (!drag || (event?.pointerId != null && event.pointerId !== drag.pointerId)) return;
+  cardDrag = null;
+  window.removeEventListener('pointermove', moveCardDrag);
+  window.removeEventListener('pointerup', endCardDrag);
+  window.removeEventListener('pointercancel', cancelCardDrag);
+  window.removeEventListener('blur', cancelCardDrag);
+  drag.ghost?.remove();
+  drag.button.classList.remove('drag-source');
+  drag.target?.node.classList.remove('drop-target');
+  drag.zone.hidden = true;
+  drag.zone.dataset.mode = '';
+  drag.zone.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('is-dragging');
+}
+
+function startCardDrag(event, button) {
+  if (event.button !== 0 || cardDrag || state.actionPending) return;
+  const game = state.game;
+  if (!game?.you?.turn) return;
+  const card = game.hand.find(item => item.id === button.dataset.card);
+  if (!card) return;
+  const canDefend = game.canDefend && game.table.some(row => !row.defense && beats(row.attack, card, game.trump));
+  if (!canDefend && !tableDropMode(game, card)) return;
+  cardDrag = {
+    card,
+    button,
+    zone: document.querySelector('#tableDropZone'),
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    box: button.getBoundingClientRect()
+  };
+  window.addEventListener('pointermove', moveCardDrag, { passive: false });
+  window.addEventListener('pointerup', endCardDrag);
+  window.addEventListener('pointercancel', cancelCardDrag);
+  window.addEventListener('blur', cancelCardDrag);
+}
+
 function renderGame() {
   const game = state.game;
   if (!game) return;
-  const previousHand = new Set([...document.querySelectorAll('.hand-card')].map(button => button.dataset.card));
-  const previousTable = new Set([...document.querySelectorAll('#tableCards [data-card-id]')].map(card => card.dataset.cardId));
+  const previous = state.renderedGame?.room.id === game.room.id ? state.renderedGame : null;
+  state.renderedGame = game;
+  const handNodes = [...document.querySelectorAll('#myHand .hand-card')];
+  const previousHand = new Set(handNodes.map(button => button.dataset.card));
+  const handBoxes = new Map(handNodes.map(button => [button.dataset.card, button.getBoundingClientRect()]));
+  const seatBoxes = new Map([...document.querySelectorAll('.seat[data-seat]')].map(seat => [seat.dataset.seat, seat.getBoundingClientRect()]));
+  const leavingNodes = [...document.querySelectorAll('#tableCards [data-card-id]')].map(card => {
+    const box = card.getBoundingClientRect();
+    return { node: card, box, cardWidth: box.width };
+  });
+  const previousTable = new Set(leavingNodes.map(item => item.node.dataset.cardId));
+  const events = Array.isArray(game.log) ? game.log : [];
+  const lastEvent = events.length ? events[events.length - 1] : null;
+  const lastSeq = Number(lastEvent && lastEvent.seq) || 0;
+  const fresh = Boolean(lastEvent) && (state.lastEventRoom !== game.room.id || lastSeq > Number(state.lastEventSeq || 0));
+  if (lastEvent && fresh) {
+    state.lastEventSeq = lastSeq;
+    state.lastEventRoom = game.room.id;
+  }
+  const lastActor = lastEvent && lastEvent.actorId ? lastEvent.actorId : null;
+  const myId = game.you && game.you.id;
+  const motion = !matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const roundEnded = fresh && lastEvent.action === 'pass' && previous?.table.length && !game.table.length;
   document.querySelector('#tableName').textContent = game.room.name;
   const modeLabel = game.room.mode === 'transfer' ? 'Переводной' : 'Подкидной';
-  document.querySelector('#tableMode').textContent = `${modeLabel} · ${game.room.deckSize} карт${game.room.bet ? ` · ставка ${chips(game.room.bet)}` : ''}${game.trump ? ` · козырь ${game.trump}` : ''}`;
+  document.querySelector('#tableMode').textContent = `${modeLabel}${game.room.bet ? ` · Ставка ${chips(game.room.bet)}` : ''}`;
   document.querySelector('#roomCode').textContent = `КОД ${game.room.id}`;
 
   const trump = document.querySelector('#trumpCard');
-  trump.innerHTML = game.trumpCard ? cardHTML(game.trumpCard) : '';
+  trump.innerHTML = game.trumpCard ? cardHTML(game.trumpCard, 'trump-face') : '';
   trump.classList.toggle('empty', !game.trumpCard);
   const trumpSuit = document.querySelector('#trumpSuit');
   if (trumpSuit) {
-    trumpSuit.textContent = game.trump || '';
+    trumpSuit.textContent = game.trumpCard ? '' : game.trump || '';
     trumpSuit.classList.toggle('red', game.trump === '♥' || game.trump === '♦');
   }
   const deckBox = document.querySelector('#deckBox');
+  const deckCard = deckBox.querySelector('.deck-back');
+  const deckSource = roundEnded && motion ? deckCard.getBoundingClientRect() : null;
+  const dealing = motion && fresh && lastEvent?.action === 'start' && previous && previous.room.status !== 'playing';
   deckBox.classList.toggle('empty', !game.deck);
   deckBox.style.setProperty('--depth', String(Math.max(2, Math.min(7, Math.round(game.deck / 4) + 1))));
   document.querySelector('#deckCount').textContent = game.deck;
-
   const table = document.querySelector('#tableCards');
-  table.innerHTML = game.table.length
-    ? game.table.map(row => `<div class="pair">${cardHTML(row.attack, `attack ${row.defense ? '' : 'target'}`).replace('<div ', `<div data-target-card="${esc(row.attack.id)}" `)}${row.defense ? cardHTML(row.defense, 'defense') : ''}</div>`).join('')
-    : '';
-  table.ondragover = event => event.preventDefault();
-  table.ondrop = event => {
-    if (event.target.closest('.target')) return;
-    event.preventDefault();
-    const cardId = event.dataTransfer.getData('text/plain');
-    if (cardId) playCard(cardId);
-  };
+  table.querySelectorAll('.pair').forEach(pair => pair.remove());
+  table.insertAdjacentHTML('beforeend', game.table.map((row, index) => `<div class="pair" data-pair="${index}" data-attack="${esc(row.attack.id)}">${cardHTML(row.attack, `attack ${row.defense ? '' : 'target'}`).replace('<div ', `<div data-target-card="${esc(row.attack.id)}" `)}${row.defense ? cardHTML(row.defense, 'defense') : ''}</div>`).join(''));
   table.querySelectorAll('.target').forEach(target => {
-    target.addEventListener('dragover', event => event.preventDefault());
-    target.addEventListener('drop', event => {
-      event.preventDefault();
+    target.addEventListener('click', event => {
       event.stopPropagation();
-      const cardId = event.dataTransfer.getData('text/plain');
+      const cardId = document.querySelector('.hand-card:focus')?.dataset.card;
       if (cardId) playCard(cardId, target.dataset.targetCard);
     });
   });
 
-  document.querySelector('#tableMessage').textContent = game.room.status === 'waiting'
-    ? `Ожидаем игроков. Код приглашения: ${game.room.id}`
-    : game.message;
+  const turnPlayer = game.players.find(player => player.id === game.turnId);
+  const defenderPlayer = game.players.find(player => player.role === 'defender');
+  const tableMessage = game.room.status === 'waiting'
+    ? 'Ожидаем игроков'
+    : game.room.status === 'playing' && turnPlayer
+      ? `${turnPlayer.name} ходит${defenderPlayer ? ` · ${defenderPlayer.name} защищается` : ''}`
+      : game.message;
+  document.querySelector('#tableMessage').textContent = tableMessage;
 
   const myIndex = game.players.findIndex(player => player.id === (game.you && game.you.id));
   const seats = [];
@@ -1589,16 +1899,31 @@ function renderGame() {
     seats.push(game.players[index]);
   }
   if (myIndex === -1) seats.push(game.players[0]);
-  const seatPositions = [[], [1], [2, 3], [2, 1, 3], [2, 4, 5, 3], [2, 4, 1, 5, 3]][Math.min(seats.length, 5)];
-  document.querySelector('#seats').innerHTML = seats.slice(0, 5).map((player, index) => `
-    <div class="seat pos-${seatPositions[index]} ${player.id === game.turnId ? 'turn' : ''} ${player.connected ? '' : 'offline'}">
+  const seatRoot = document.querySelector('#seats');
+  const focusedSeat = document.activeElement?.dataset.seat;
+  const previewSeat = modalTrigger?.dataset.seat;
+  seatRoot.innerHTML = seats.slice(0, 5).map(player => {
+    const role = player.role === 'attacker' ? 'attacker' : player.role === 'defender' ? 'defender' : '';
+    const status = player.left ? 'Ушёл' : player.finished ? 'Закончил' : !player.connected ? 'Не в сети' : '';
+    const roleLabel = role === 'attacker' ? 'Атакует' : role === 'defender' ? 'Защищается' : '';
+    const turnLabel = player.id === game.turnId ? ' · Ходит' : '';
+    const cardsLabel = game.room.status === 'waiting' ? '' : `, ${Number(player.cards)} ${cardsWord(player.cards)}`;
+    const cardsHTML = game.room.status === 'waiting' ? '' : `<span class="seat-cards"><span class="opponent-fan" aria-hidden="true">${Array.from({ length: Number(player.cards) || 0 }, (_, cardIndex) => `<i style="--fan-index:${cardIndex};--fan-count:${Number(player.cards) || 0}">${cardBackHTML()}</i>`).join('')}</span><b aria-hidden="true">${Number(player.cards)}</b>${roleLabel ? `<span class="role-label ${role}">${roleIcon(role)}${roleLabel}${turnLabel}</span>` : ''}</span>`;
+    return `<button class="seat ${player.id === game.turnId ? 'turn' : ''}" data-seat="${esc(player.id)}" type="button" aria-haspopup="dialog" aria-label="Профиль игрока ${esc(player.name)}${cardsLabel}${roleLabel ? `, ${roleLabel}` : status ? `, ${status}` : ''}">
       ${avatarHTML(player)}
-      <strong>${esc(player.name)}</strong>
-      <span class="seat-cards">${player.finished ? 'вышел' : player.cards ? `<span class="opponent-hand">${Array.from({ length: Math.min(player.cards, 10) }, () => cardBackHTML()).join('')}</span><small>${player.cards} карт</small>` : 'нет карт'}</span>
-      ${!player.finished && player.role === 'attacker' ? '<span class="seat-role attacker">атакует</span>' : ''}
-      ${!player.finished && player.role === 'defender' ? '<span class="seat-role defender">защищается</span>' : ''}
-    </div>
-  `).join('');
+      <span class="seat-main"><strong>${esc(player.name)}</strong>${status ? `<span class="seat-state">${status}</span>` : ''}</span>
+      ${cardsHTML.replace(roleLabel ? `>${roleIcon(role)}${roleLabel}</span>` : '', roleLabel ? `>${roleIcon(role)}${roleLabel}${turnLabel}</span>` : '')}
+    </button>`;
+  }).join('');
+  seatRoot.querySelectorAll('.seat').forEach(seat => {
+    if (seat.dataset.seat === focusedSeat) seat.focus({ preventScroll: true });
+    if (seat.dataset.seat === previewSeat) modalTrigger = seat;
+    seat.addEventListener('click', () => {
+      const player = state.game?.players.find(item => item.id === seat.dataset.seat);
+      if (player) openPlayerPreview(player);
+    });
+  });
+
 
   const hand = sortHand(game.hand || [], game.trump);
   const ranksOnTable = new Set();
@@ -1613,8 +1938,9 @@ function renderGame() {
     return false;
   };
   const handRoot = document.querySelector('#myHand');
-  const handSignature = `${game.room.id}:` + hand.map(card => `${card.id}${dimmed(card) ? '·' : ''}`).join(' ') + `|${game.trump || ''}`;
+  const handSignature = `${game.room.id}:` + hand.map(card => `${card.id}${dimmed(card) ? '·' : ''}`).join(' ') + `|${game.trump || ''}|${game.you && game.you.turn ? 'turn' : 'idle'}|${game.you && game.you.role || ''}|${game.takePending ? 'take' : ''}`;
   if (handRoot.dataset.signature !== handSignature) {
+    cancelCardDrag();
     const focusedCard = handRoot.contains(document.activeElement) ? document.activeElement.dataset.card : null;
     handRoot.dataset.signature = handSignature;
     handRoot.innerHTML = hand.map(card => {
@@ -1626,12 +1952,18 @@ function renderGame() {
       const suits = { '♠': 'пик', '♣': 'треф', '♥': 'червей', '♦': 'бубен' };
       const ranks = { 'В': 'валет', 'Д': 'дама', 'К': 'король', 'Т': 'туз' };
       button.setAttribute('aria-label', `${ranks[card.rank] || card.rank} ${suits[card.suit] || card.suit}`);
-      if (!previousHand.has(button.dataset.card) && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      if (!previousHand.has(button.dataset.card) && motion && !roundEnded && !dealing) {
         button.animate([{ opacity: 0, transform: 'translateY(18px)' }, { opacity: 1, transform: 'translateY(0)' }], { duration: 380, delay: Math.min(index * 35, 210), easing: 'cubic-bezier(.22,1,.36,1)', fill: 'backwards' });
       }
-      button.draggable = true;
-      button.addEventListener('dragstart', event => event.dataTransfer.setData('text/plain', button.dataset.card));
-      button.addEventListener('click', () => playCard(button.dataset.card));
+      button.draggable = false;
+      button.addEventListener('pointerdown', event => startCardDrag(event, button));
+      button.addEventListener('click', () => {
+        if (state.suppressClick) {
+          state.suppressClick = false;
+          return;
+        }
+        playCard(button.dataset.card);
+      });
     });
     if (focusedCard) {
       const replacement = [...handRoot.querySelectorAll('.hand-card')].find(button => button.dataset.card === focusedCard);
@@ -1639,57 +1971,56 @@ function renderGame() {
     }
   }
 
-  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    table.querySelectorAll('[data-card-id]').forEach(card => {
-      if (!previousTable.has(card.dataset.cardId)) card.animate([{ opacity: 0, transform: 'translateY(12px) rotate(-4deg)' }, { opacity: 1, transform: 'translateY(0) rotate(0)' }], { duration: 320, easing: 'cubic-bezier(.22,1,.36,1)' });
-    });
-  }
-  renderActions(game);
   fitHand();
   fitTable();
+  if (motion) {
+    const actorBox = lastActor ? seatBoxes.get(lastActor) : null;
+    table.querySelectorAll('[data-card-id]').forEach(card => {
+      if (previousTable.has(card.dataset.cardId)) return;
+      const source = lastActor === myId ? handBoxes.get(card.dataset.cardId) : actorBox;
+      if (source) flyCard(card, source);
+      else card.animate([{ opacity: 0, transform: 'translateY(12px) rotate(-4deg)' }, { opacity: 1, transform: 'none' }], { duration: 300, easing: 'cubic-bezier(.22,1,.36,1)' });
+    });
+    if (dealing) animateDeal(game, deckCard.getBoundingClientRect(), handRoot, seatRoot);
+    if (roundEnded) animateRoundEnd(previous, game, leavingNodes, deckSource, handRoot, seatRoot);
+  }
+  renderActions(game);
+  if (cardDrag?.ghost) updateDragTarget(cardDrag.clientX, cardDrag.clientY);
   renderFinish(game);
 }
 
 function fitTable() {
   const row = document.querySelector('#tableCards');
   const message = document.querySelector('#tableMessage');
-  if (!row) return;
-  const zoom = row.style.getPropertyValue('zoom');
-  const apply = (property, value) => {
-    if (row.style.getPropertyValue(property) !== value) row.style.setProperty(property, value);
-  };
-  if (!row.querySelector('.pair') || !row.parentElement) {
-    apply('zoom', '');
-    if (message) message.style.removeProperty('--message-bottom');
-    return;
-  }
-  const content = row.scrollWidth;
-  if (!content) return;
+  if (!row || !row.parentElement || !message) return;
+  const table = row.parentElement;
+  const tableH = table.clientHeight;
+  if (!tableH) return;
   const share = (parseFloat(getComputedStyle(row).getPropertyValue('--row-max')) || 88) / 100;
-  const room = share * row.parentElement.clientWidth;
-  const scale = room / content;
-  const next = scale < .98 ? Math.max(.7, scale).toFixed(3) : '';
-  if (next !== zoom) row.style.setProperty('zoom', next);
-  if (message) {
-    const handBox = row.parentElement.querySelector('.my-hand')?.getBoundingClientRect();
-    const cardRow = row.getBoundingClientRect().bottom;
-    const base = Math.max(34, Math.round(row.parentElement.getBoundingClientRect().bottom - cardRow + 18));
-    const lifted = handBox && handBox.top - cardRow > message.offsetHeight + 40 ? Math.round(row.parentElement.getBoundingClientRect().bottom - handBox.top + 18) : base;
-    message.style.setProperty('--message-bottom', Math.max(base, lifted) + 'px');
-  }
-}
-
-function handTopInset(node) {
-  const outer = node.getBoundingClientRect();
-  const cards = [...node.querySelectorAll('.hand-card')];
-  if (!cards.length) return 0;
-  return Math.max(0, Math.min(...cards.map(card => card.getBoundingClientRect().top)) - outer.top);
+  const scale = Math.min(1, share * table.clientWidth / Math.max(1, row.offsetWidth));
+  const zoom = scale < .999 ? scale.toFixed(3) : '';
+  if (row.style.zoom !== zoom) row.style.zoom = zoom;
+  const rowScale = Number(zoom) || 1;
+  const tableTop = table.getBoundingClientRect().top + table.clientTop;
+  const hand = table.querySelector('.my-hand');
+  const handTop = hand ? hand.getBoundingClientRect().top - tableTop : tableH;
+  const msgH = message.offsetHeight || 40;
+  const gap = 12;
+  const messageBottom = Math.max(msgH + 8, tableH - handTop + gap);
+  const messageValue = `${Math.round(messageBottom)}px`;
+  if (message.style.getPropertyValue('--message-bottom') !== messageValue) message.style.setProperty('--message-bottom', messageValue);
+  const limit = tableH - messageBottom - msgH - gap;
+  const current = row.style.getPropertyValue('--cards-shift');
+  if (current) row.style.setProperty('--cards-shift', '');
+  const base = row.getBoundingClientRect().bottom - tableTop;
+  const shift = Math.max(0, Math.round((base - limit) / rowScale));
+  const shiftValue = shift ? `${shift}px` : '';
+  row.style.setProperty('--cards-shift', shiftValue);
 }
 
 function fitHand() {
   const hand = document.querySelector('#myHand');
   if (!hand) return;
-  hand.style.setProperty('--hand-top', `${Math.round(handTopInset(hand))}px`);
   const cards = hand.querySelectorAll('.hand-card');
   const styles = getComputedStyle(hand);
   const padding = (parseFloat(styles.paddingLeft) || 0) + (parseFloat(styles.paddingRight) || 0);
@@ -1701,7 +2032,7 @@ function fitHand() {
   };
   if (cards.length < 2 || !cardWidth || !available) {
     apply('--overlap', '');
-    apply('zoom', '');
+    apply('--hand-zoom', '');
     return;
   }
   const count = cards.length;
@@ -1712,7 +2043,7 @@ function fitHand() {
   const total = cardWidth + (count - 1) * (cardWidth - overlap);
   const zoom = !scrolls && total > available + 8 ? Math.max(.7, available / total) : 1;
   apply('--overlap', `${overlap}px`);
-  apply('zoom', zoom < .999 ? zoom.toFixed(3) : '');
+  apply('--hand-zoom', zoom < .999 ? zoom.toFixed(3) : '');
 }
 
 window.addEventListener('resize', () => {
@@ -1723,10 +2054,10 @@ window.addEventListener('resize', () => {
 function renderActions(game) {
   const actions = document.querySelector('#gameActions');
   const buttons = [];
-  if (game.room.status === 'playing') {
+  if (game.room.status === 'playing' && !state.actionPending) {
     if (game.canTake) buttons.push({ label: game.takePending ? 'Забрать карты' : 'Взять карты', action: 'take', style: game.takePending ? 'primary-btn' : 'secondary-btn' });
     if (game.canPass) buttons.push({ label: game.takePending ? 'Хватит, забирайте' : 'Бито', action: 'pass', style: 'primary-btn' });
-    if (!buttons.length) buttons.push({ label: `Ход: ${game.turnName}`, action: null, style: 'secondary-btn', disabled: true });
+
   } else {
     if (game.canStart) buttons.push({ label: game.room.status === 'finished' ? 'Играть снова' : 'Начать игру', action: 'start', style: 'primary-btn' });
     else if (game.room.status === 'waiting') {
@@ -1734,7 +2065,7 @@ function renderActions(game) {
       const connected = game.players.filter(player => player.connected).length;
       buttons.push({ label: isHost ? `Ждём игроков (${connected}/6)` : 'Ждём, пока создатель начнёт игру', action: null, style: 'secondary-btn', disabled: true });
     }
-    buttons.push({ label: `Код: ${game.room.id}`, action: 'copy', style: 'secondary-btn' });
+
   }
   const signature = JSON.stringify(buttons);
   if (actions.dataset.signature === signature) return;
@@ -1801,7 +2132,7 @@ async function playCard(cardId, targetCardId = null) {
     return act('attack', cardId);
   }
   if (game.you.role === 'defender') {
-    if (game.canTransfer && game.table.length && game.table.every(row => !row.defense) && card.rank === game.table[0].attack.rank) {
+    if (!targetCardId && canTransferCard(game, card)) {
       return act('transfer', cardId);
     }
     if (game.takePending) return toast('Вы уже решили взять карты');
@@ -1809,10 +2140,11 @@ async function playCard(cardId, targetCardId = null) {
     const row = targetCardId
       ? game.table.find(item => !item.defense && item.attack.id === targetCardId)
       : game.table.find(item => !item.defense && beats(item.attack, card, game.trump)) || game.table.find(item => !item.defense);
-    if (row && !beats(row.attack, card, game.trump)) {
+    if (!row) return toast('Сейчас отбивать нечего');
+    if (!beats(row.attack, card, game.trump)) {
       return toast(`Карта ${card.rank}${card.suit} не бьёт ${row.attack.rank}${row.attack.suit}`);
     }
-    return act('defend', cardId, row ? row.attack.id : targetCardId);
+    return act('defend', cardId, row.attack.id);
   }
   toast('Сейчас ходит другой игрок');
 }
@@ -1821,14 +2153,17 @@ async function act(action, cardId, targetCardId = null) {
   if (state.actionPending) return;
   if (!state.connected) return toast('Нет связи с сервером. Переподключаемся…');
   state.actionPending = true;
+  state.actionPendingSeq = Number(state.game?.seq) || 0;
+  renderActions(state.game);
   document.querySelector('#gameScreen').setAttribute('aria-busy', 'true');
   try {
     await api('/api/action', { clientId, action, cardId, targetCardId });
   } catch (error) {
-    toast(error.message);
-  } finally {
     state.actionPending = false;
+    state.actionPendingSeq = 0;
+    renderActions(state.game);
     document.querySelector('#gameScreen').setAttribute('aria-busy', 'false');
+    toast(error.message);
   }
 }
 
@@ -1869,16 +2204,19 @@ function copyInvite() {
 if (document.querySelector('#roomCode')) document.querySelector('#roomCode').addEventListener('click', copyInvite);
 
 async function leaveRoom() {
+  state.leavingRoom = true;
   try {
     await api('/api/leave', { clientId });
   } catch (error) {
     toast(error.message);
+    state.leavingRoom = false;
     return false;
   }
   state.game = null;
   forgetSeatRoom();
   document.querySelector('#finishOverlay').classList.remove('open');
   setView('lobby');
+  setTimeout(() => { state.leavingRoom = false; }, 0);
   return true;
 }
 if (document.querySelector('#leaveRoom')) document.querySelector('#leaveRoom').addEventListener('click', () => {
@@ -1969,13 +2307,15 @@ async function bootstrap() {
   if (await completeDiscordLogin()) return;
   await prepareTemporaryLogin();
   if (!clientId || !sessionToken) return;
-  document.querySelector('#loginScreen').hidden = true;
-  document.querySelector('#appShell').hidden = false;
-  connect();
   try {
     const profile = await api('/api/profile', { clientId });
     if (profile.account) state.account = profile.account;
-  } catch (error) {}
+  } catch (error) {
+    if (/токен/i.test(error.message)) return signOut();
+  }
+  document.querySelector('#loginScreen').hidden = true;
+  document.querySelector('#appShell').hidden = false;
+  connect();
   const inviteCode = inviteCodeFromUrl(new URL(location.href));
   const savedRoom = readSeatRoom();
   if (inviteCode) {
