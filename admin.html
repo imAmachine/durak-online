@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#080d0a">
+  <meta name="robots" content="noindex">
+  <meta name="description" content="Панель администратора карточного клуба BomzhClub.">
+  <title>Панель клуба · BomzhClub</title>
+  <link rel="stylesheet" href="style.css?v=62">
+</head>
+<body data-admin="page">
+  <div class="ambient" aria-hidden="true">
+    <div class="ambient-layer ambient-far"></div>
+    <div class="ambient-layer ambient-mid"></div>
+    <div class="ambient-glass"></div>
+    <div class="ambient-layer ambient-near"></div>
+    <div class="ambient-frost"></div>
+    <div class="ambient-haze"></div>
+  </div>
+  <main class="admin-page" id="adminMain">
+    <header class="admin-top">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">♠</span><span>BomzhClub<em>ПАНЕЛЬ КЛУБА</em></span></div>
+      <div class="admin-top-actions">
+        <button class="ghost-btn" id="adminRefresh">Обновить</button>
+        <button class="ghost-btn" id="adminExit">Закрыть доступ</button>
+        <a class="primary-btn" href="/">В лобби</a>
+      </div>
+    </header>
+    <section class="admin-login" id="adminLogin" hidden aria-labelledby="adminLoginTitle">
+      <div class="login-panel">
+        <p class="login-brand"><span aria-hidden="true">♠</span> ЗАКРЫТЫЙ ДОСТУП</p>
+        <h1 id="adminLoginTitle">Панель<br><em>клуба.</em></h1>
+        <p class="login-copy">Ключ администратора задаётся переменной окружения ADMIN_KEY на сервере.</p>
+        <div id="adminGate"></div>
+        <p class="discord-status" id="adminLoginStatus" role="status" aria-live="polite">Введите ключ, чтобы управлять игроками.</p>
+      </div>
+    </section>
+    <section class="admin-panel" id="adminPanel" hidden aria-labelledby="adminTitle">
+      <div class="admin-panel-head">
+        <div>
+          <p class="eyebrow">УПРАВЛЕНИЕ КЛУБОМ</p>
+          <h1 id="adminTitle">Игроки</h1>
+          <p class="connection-status" id="adminMeta">Загружаем список…</p>
+        </div>
+        <div class="admin-panel-tools">
+          <label class="admin-search">Поиск<input id="adminSearch" placeholder="Имя или id" autocomplete="off"></label>
+          <button class="primary-btn" id="adminCreate">+ Временный аккаунт</button>
+        </div>
+      </div>
+      <div class="admin-toolbar" id="adminFilters"></div>
+      <div class="admin-layout">
+        <div class="admin-list" id="adminList" aria-live="polite"></div>
+        <aside class="admin-editor" id="adminEditor"></aside>
+      </div>
+    </section>
+  </main>
+  <div class="modal-backdrop" id="modalBackdrop" aria-hidden="true" inert>
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Окно панели клуба" tabindex="-1">
+      <button class="close-btn" id="modalClose" aria-label="Закрыть окно">×</button>
+      <div id="modalBody"></div>
+    </div>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+  <script src="app.js?v=47"></script>
+</body>
+</html>

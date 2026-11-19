@@ -2,7 +2,7 @@ function readCredentials() {
   try {
     const clientId = sessionStorage.getItem('durak.client');
     const token = sessionStorage.getItem('durak.token');
-    if (/^discord:[A-Za-z0-9_-]+$/.test(clientId || '') && /^[a-f0-9]{64}$/.test(token || '')) return { clientId, token };
+    if (/^(discord|temp):[A-Za-z0-9_-]+$/.test(clientId || '') && /^[a-f0-9]{64}$/.test(token || '')) return { clientId, token };
   } catch (error) {
     return null;
   }
@@ -18,6 +18,15 @@ const SUIT_ORDER = ['♠', '♥', '♦', '♣'];
 const AVATAR_TINTS = ['#dceadf', '#f0dfe2', '#f2e7ca', '#dbe7f1', '#e6e0f1', '#f6e2d6'];
 const BET_OPTIONS = [0, 50, 100, 250, 500];
 const EMPTY_ACCOUNT = { balance: 0, games: 0, wins: 0, losses: 0 };
+const adminPage = document.body.dataset.admin === 'page';
+const adminState = { players: [], query: '', selected: null, loading: false, filter: 'all', sort: 'recent' };
+const ADMIN_FILTERS = [
+  ['all', 'Все'],
+  ['temp', 'Клубные'],
+  ['discord', 'Discord'],
+  ['legacy', 'Старые'],
+  ['online', 'Онлайн'],
+];
 
 const state = {
   profile: loadProfile(),
@@ -107,13 +116,14 @@ function toast(message) {
 const backdrop = document.querySelector('#modalBackdrop');
 let modalTrigger = null;
 function openModal(html, onMount) {
+  if (!backdrop) return;
   if (!backdrop.classList.contains('open')) modalTrigger = document.activeElement;
   const body = document.querySelector('#modalBody');
   body.innerHTML = html;
   backdrop.inert = false;
   backdrop.setAttribute('aria-hidden', 'false');
   backdrop.classList.add('open');
-  document.querySelector('#appShell').inert = true;
+  if (document.querySelector('#appShell')) document.querySelector('#appShell').inert = true;
   document.body.classList.add('modal-open');
   const heading = body.querySelector('h2');
   if (heading) {
@@ -124,30 +134,31 @@ function openModal(html, onMount) {
   (body.querySelector('input, select, button') || backdrop.querySelector('#modalClose')).focus();
 }
 function closeModal() {
+  if (!backdrop) return;
   backdrop.classList.remove('open');
-  document.querySelector('#appShell').inert = false;
+  if (document.querySelector('#appShell')) document.querySelector('#appShell').inert = false;
   document.body.classList.remove('modal-open');
   if (modalTrigger && modalTrigger.isConnected) modalTrigger.focus();
   backdrop.inert = true;
   backdrop.setAttribute('aria-hidden', 'true');
 }
-document.querySelector('#modalClose').addEventListener('click', closeModal);
+if (document.querySelector('#modalClose')) document.querySelector('#modalClose').addEventListener('click', closeModal);
 let backdropPressStarted = false;
-backdrop.addEventListener('pointerdown', event => {
+if (backdrop) backdrop.addEventListener('pointerdown', event => {
   backdropPressStarted = event.target === backdrop;
 });
-backdrop.addEventListener('pointerup', event => {
+if (backdrop) backdrop.addEventListener('pointerup', event => {
   if (backdropPressStarted && event.target === backdrop) closeModal();
   backdropPressStarted = false;
 });
-backdrop.addEventListener('pointercancel', () => {
+if (backdrop) backdrop.addEventListener('pointercancel', () => {
   backdropPressStarted = false;
 });
-backdrop.addEventListener('click', event => {
+if (backdrop) backdrop.addEventListener('click', event => {
   if (event.target === backdrop) event.preventDefault();
 });
 document.addEventListener('keydown', event => {
-  if (!backdrop.classList.contains('open')) return;
+  if (!backdrop || !backdrop.classList.contains('open')) return;
   if (event.key === 'Escape') closeModal();
   if (event.key === 'Tab') {
     const controls = [...backdrop.querySelectorAll('button:not(:disabled), input, select, [tabindex="0"]')].filter(element => element.getClientRects().length);
@@ -164,13 +175,40 @@ document.addEventListener('keydown', event => {
 });
 
 /* profile */
-document.querySelector('#profileBtn').addEventListener('click', openProfileModal);
+if (document.querySelector('#profileBtn')) document.querySelector('#profileBtn').addEventListener('click', () => {
+  renderCabinet();
+  setView('cabinet');
+});
 
 async function authRequest(path, body) {
   const response = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || 'Вход через Discord недоступен');
   return data;
+}
+
+async function prepareTemporaryLogin() {
+  const button = document.querySelector('#tempLogin');
+  if (!button) return;
+  const submit = async () => {
+    const name = document.querySelector('#tempLoginName').value.trim();
+    const password = document.querySelector('#tempLoginPassword').value;
+    button.disabled = true;
+    try {
+      const data = await authRequest('/api/auth/temp/login', { name, password });
+      if (!/^temp:[A-Za-z0-9_-]{1,120}$/.test(data.clientId || '') || !/^[a-f0-9]{64}$/.test(data.token || '')) throw new Error('Сервер вернул неверные данные входа');
+      sessionStorage.setItem('durak.client', data.clientId);
+      sessionStorage.setItem('durak.token', data.token);
+      location.reload();
+    } catch (error) {
+      button.disabled = false;
+      setDiscordLoginState(true, `Не удалось войти: ${error.message}`);
+    }
+  };
+  button.addEventListener('click', submit);
+  document.querySelector('#tempLoginPassword').addEventListener('keydown', event => {
+    if (event.key === 'Enter') submit();
+  });
 }
 
 function setDiscordLoginState(enabled, message) {
@@ -188,6 +226,12 @@ function isDiscordCallback(url) {
 
 function inviteCodeFromUrl(url) {
   return isDiscordCallback(url) ? null : url.searchParams.get('code');
+}
+
+function dropInviteQuery() {
+  const url = new URL(location.href);
+  url.searchParams.delete('code');
+  history.replaceState(null, document.title, `${url.pathname}${url.search}${url.hash}`);
 }
 
 function clearAuthQuery() {
@@ -225,7 +269,7 @@ async function completeDiscordLogin() {
   }
   try {
     const data = await authRequest('/api/auth/discord/complete', { code, state: stateValue, flowSecret });
-    if (!/^discord:[A-Za-z0-9_-]{1,120}$/.test(data.clientId || '') || !/^[a-f0-9]{64}$/.test(data.token || '')) throw new Error('Сервер вернул неверные данные входа');
+    if (!/^(discord|temp):[A-Za-z0-9_-]{1,120}$/.test(data.clientId || '') || !/^[a-f0-9]{64}$/.test(data.token || '')) throw new Error('Сервер вернул неверные данные входа');
     try {
       sessionStorage.setItem('durak.client', data.clientId);
       sessionStorage.setItem('durak.token', data.token);
@@ -274,10 +318,15 @@ async function prepareDiscordLogin() {
   }
 }
 function renderProfile() {
-  document.querySelector('#profileName').textContent = state.profile.name;
+  const name = state.account.name || state.profile.name;
+  const nameNode = document.querySelector('#profileName');
   const avatar = document.querySelector('#profileAvatar');
-  avatar.textContent = initials(state.profile.name);
+  if (!nameNode || !avatar) return;
+  nameNode.textContent = name;
+  avatar.textContent = initials(name);
   avatar.style.background = AVATAR_TINTS[state.profile.tint % AVATAR_TINTS.length];
+  avatar.style.backgroundImage = state.account.avatarUrl ? `url("${state.account.avatarUrl}")` : '';
+  avatar.classList.toggle('has-image', Boolean(state.account.avatarUrl));
   const balance = document.querySelector('#profileBalance');
   if (balance) balance.textContent = `${chips(state.account.balance)} фишек`;
 }
@@ -300,17 +349,17 @@ function openProfileModal() {
         <span><b>${account.losses}</b>поражений</span>
       </div>
     </div>
-    <label>Имя игрока<input id="mName" maxlength="20" value="${esc(state.profile.name)}"></label>
+    <label>Имя игрока<input id="mName" maxlength="20" value="${esc(account.name || state.profile.name)}"></label>
     <label>Цвет аватара
       <div class="swatches" id="mSwatches">
         ${AVATAR_TINTS.map((tint, index) => `<button class="swatch ${index === state.profile.tint ? 'active' : ''}" data-tint="${index}" style="background:${tint}" aria-label="Цвет ${index + 1}"></button>`).join('')}
       </div>
     </label>
     <div class="modal-actions">
-      <button class="ghost-btn admin-link" id="mAdmin">Панель клуба</button>
       <button class="secondary-btn" id="mCancel">Отмена</button>
       <button class="primary-btn" id="mSave">Сохранить</button>
     </div>
+    <p class="profile-foot"><button class="link-btn" id="mQuit">Выйти из аккаунта</button></p>
   `, root => {
     let tint = state.profile.tint;
     root.querySelector('#mSwatches').addEventListener('click', event => {
@@ -319,8 +368,8 @@ function openProfileModal() {
       tint = Number(button.dataset.tint);
       root.querySelectorAll('.swatch').forEach(item => item.classList.toggle('active', item === button));
     });
-    root.querySelector('#mAdmin').addEventListener('click', openAdminPanel);
     root.querySelector('#mCancel').addEventListener('click', closeModal);
+    root.querySelector('#mQuit').addEventListener('click', signOut);
     root.querySelector('#mSave').addEventListener('click', async () => {
       const name = root.querySelector('#mName').value.trim().slice(0, 20);
       if (!name) return toast('Введите имя');
@@ -341,6 +390,83 @@ function openProfileModal() {
       }
     });
   });
+}
+
+/* personal cabinet */
+function winRate(account) {
+  const games = Number(account.games) || 0;
+  return games ? Math.round(((Number(account.wins) || 0) / games) * 100) : 0;
+}
+
+function renderCabinet() {
+  const account = state.account;
+  const history = Array.isArray(state.lobby.history) ? state.lobby.history : [];
+  const recent = history.slice(0, 8);
+  const build = document.querySelector('#cabBuild');
+  if (build) {
+    build.innerHTML = `
+      <div class="cab-hero">
+        <span class="cab-avatar avatar" style="background:${AVATAR_TINTS[state.profile.tint % AVATAR_TINTS.length]}${account.avatarUrl ? `;background-image:url("${esc(account.avatarUrl)}")` : ''}">${esc(initials(account.name || state.profile.name))}</span>
+        <div class="cab-identity">
+          <p class="eyebrow">ЛИЧНЫЙ КАБИНЕТ</p>
+          <h1>${esc(account.name || state.profile.name)}</h1>
+          <p class="cab-sub">${account.id ? (String(account.id).startsWith('temp:') ? 'Аккаунт клуба' : 'Аккаунт Discord') : 'Гость клуба'}${account.createdAt ? ` · в клубе с ${esc(clubDate(account.createdAt))}` : ''}</p>
+          ${account.id ? `<div class="cab-meta"><span class="cab-meta-label">id</span>${copyButtonHTML(account.id, 'id профиля')}</div>` : ''}
+        </div>
+        <div class="cab-balance">
+          <span>Баланс</span>
+          <strong>${chips(account.balance)}<small>фишек</small></strong>
+        </div>
+      </div>
+      <div class="cab-stats">
+        <article><span>Партии</span><strong>${account.games || 0}</strong></article>
+        <article><span>Победы</span><strong>${account.wins || 0}</strong></article>
+        <article><span>Поражения</span><strong>${account.losses || 0}</strong></article>
+        <article><span>Доля побед</span><strong>${winRate(account)}%</strong></article>
+      </div>
+      <div class="cab-columns">
+        <section class="cab-card">
+          <h2>Последние партии клуба</h2>
+          ${recent.length ? `<ul class="cab-history">${recent.map(item => `
+            <li>
+              <span class="cab-history-main"><strong>${esc(item.room || 'Партия')}</strong><small>${item.mode === 'transfer' ? 'Переводной' : 'Подкидной'}${item.bet ? ` · ставка ${chips(item.bet)}` : ''}</small></span>
+              <span class="cab-history-side"><em>${esc(item.loser || '—')}</em><small>${esc(clubMoment(item.at))}</small></span>
+            </li>`).join('')}</ul>` : '<p class="cab-empty">Партий пока не было. Соберите стол.</p>'}
+        </section>
+        <section class="cab-card">
+          <h2>Как распорядиться фишками</h2>
+          <ul class="cab-tips">
+            <li><b>Ставка за столом</b><span>Каждый вносит ставку на старте, банк делят все, кроме дурака.</span></li>
+            <li><b>Без ставки</b><span>Игра в своё удовольствие: фишки не списываются.</span></li>
+            <li><b>Пополнение</b><span>Баланс меняет администратор клуба в панели.</span></li>
+          </ul>
+          <div class="cab-actions">
+            <button class="primary-btn" id="cabOpenGame">${state.game ? 'Вернуться в игру' : 'Создать стол'}</button>
+            <button class="secondary-btn" id="cabEdit">Изменить профиль</button>
+            <button class="ghost-btn" id="cabQuit">Выйти из аккаунта</button>
+          </div>
+        </section>
+      </div>
+    `;
+    const openGame = build.querySelector('#cabOpenGame');
+    openGame.addEventListener('click', () => { if (state.game) setView('game'); else openCreateModal(); });
+    bindCopyButtons(build);
+    build.querySelector('#cabEdit').addEventListener('click', openProfileModal);
+    build.querySelector('#cabQuit').addEventListener('click', signOut);
+  }
+}
+
+function signOut() {
+  try {
+    sessionStorage.removeItem('durak.client');
+    sessionStorage.removeItem('durak.token');
+    sessionStorage.removeItem('durak.admin');
+    sessionStorage.removeItem('durak.room');
+  } catch (error) {
+    /* хранилище недоступно: выйти из аккаунта нельзя */
+  }
+  if (state.source) state.source.close();
+  location.href = '/';
 }
 
 /* lobby */
@@ -411,7 +537,7 @@ function renderLobby() {
   });
 }
 
-document.querySelector('#lobbyFilter').addEventListener('click', event => {
+if (document.querySelector('#lobbyFilter')) document.querySelector('#lobbyFilter').addEventListener('click', event => {
   const button = event.target.closest('button[data-filter]');
   if (!button) return;
   state.filter = button.dataset.filter;
@@ -424,8 +550,9 @@ document.querySelector('#lobbyFilter').addEventListener('click', event => {
 
 async function joinRoom(code) {
   try {
-    const data = await api('/api/join', { clientId, roomId: String(code).toUpperCase(), playerName: state.profile.name });
+    const data = await api('/api/join', { clientId, roomId: String(code).toUpperCase() });
     if (data.account) state.account = data.account;
+    if (data.room) rememberSeatRoom(data.room.id);
     renderProfile();
     openGameView();
     toast(`Вы вошли в «${data.room.name}»`);
@@ -447,7 +574,7 @@ function openGameView() {
 
 /* create / join / history / rules / settings modals */
 function openCreateModal() {
-  const defaultName = `${state.profile.name} — партия`;
+  const defaultName = `${state.account.name || state.profile.name} — партия`;
   const options = BET_OPTIONS.map(bet => `<option value="${bet}" ${bet > state.account.balance ? 'disabled' : ''}>${betLabel(bet)}</option>`).join('');
   openModal(`
     <div class="modal-label">НОВАЯ ИГРА</div>
@@ -491,9 +618,9 @@ function openCreateModal() {
           mode: root.querySelector('#mMode').value,
           deckSize: Number(root.querySelector('#mDeck').value),
           bet: Number(root.querySelector('#mBet').value),
-          playerName: state.profile.name,
         });
         if (data.account) state.account = data.account;
+        if (data.room) rememberSeatRoom(data.room.id);
         renderProfile();
         state.autoOpen = true;
         closeModal();
@@ -537,6 +664,7 @@ function openJoinModal(code = '') {
   });
 }
 
+function bindMainPage() {
 document.querySelector('#createBtn').addEventListener('click', openCreateModal);
 document.querySelector('#heroCreateBtn').addEventListener('click', openCreateModal);
 document.querySelector('#joinRoomBtn').addEventListener('click', () => openJoinModal());
@@ -547,7 +675,7 @@ document.querySelector('#historyBtn').addEventListener('click', () => {
     <div class="modal-label">АРХИВ</div>
     <h2>История игр</h2>
     <p class="modal-subtitle">Последние завершённые партии на сервере</p>
-    ${items.length ? `<ul class="history-list">${items.map(item => `<li><span>${esc(item.room)}<br><small>${item.mode === 'transfer' ? 'Переводной' : 'Подкидной'}${item.bet ? ` · ставка ${chips(item.bet)}` : ''} · ${new Date(item.at).toLocaleString('ru-RU')}</small></span><strong>${item.loser === 'Ничья' ? 'Ничья' : `${esc(item.loser)} проиграл`}</strong></li>`).join('')}</ul>` : '<div class="empty-state">Пока ни одна партия не завершилась</div>'}
+    ${items.length ? `<ul class="history-list">${items.map(item => `<li><span>${esc(item.room)}<br><small>${item.mode === 'transfer' ? 'Переводной' : 'Подкидной'}${item.bet ? ` · ставка ${chips(item.bet)}` : ''} · ${clubMoment(item.at)}</small></span><strong>${item.loser === 'Ничья' ? 'Ничья' : `${esc(item.loser)} проиграл`}</strong></li>`).join('')}</ul>` : '<div class="empty-state">Пока ни одна партия не завершилась</div>'}
   `);
 });
 
@@ -573,8 +701,10 @@ function openRulesModal() {
   openModal(RULES_HTML);
 }
 document.querySelector('#gameRules').addEventListener('click', openRulesModal);
+}
 
-/* admin */
+if (!adminPage) bindMainPage();
+
 function adminKey() {
   try {
     return sessionStorage.getItem('durak.admin') || '';
@@ -592,163 +722,509 @@ function storeAdminKey(key) {
   }
 }
 
-function syncAdminNav() {
-  const item = document.querySelector('.nav-item[data-view="admin"]');
-  if (item) item.hidden = !adminKey();
-}
-
 function adminApi(payload) {
   return api('/api/admin', { key: adminKey(), ...payload });
 }
 
-function openAdminPanel() {
-  if (!adminKey()) return openAdminGate();
-  adminApi({ op: 'list' }).then(data => {
-    const players = data.players || [];
-    const online = players.filter(player => player.online).length;
-    openModal(`
-      <div class="modal-label">ПАНЕЛЬ КЛУБА</div>
-      <h2>Игроки</h2>
-      <p class="modal-subtitle">${players.length} профилей · ${online} онлайн · балансы и статистика правятся вручную</p>
-      <label>Поиск по нику<input id="aSearch" placeholder="Ник игрока" autocomplete="off"></label>
-      <div class="admin-list" id="aList"></div>
-    `, root => {
-      const search = root.querySelector('#aSearch');
-      const list = root.querySelector('#aList');
-      const draw = () => {
-        const term = search.value.trim().toLowerCase();
-        const visible = players.filter(player => !term || player.name.toLowerCase().includes(term));
-        list.innerHTML = visible.length
-          ? visible.map(player => `
-            <button class="admin-row" data-player="${esc(player.id)}" aria-label="Профиль ${esc(player.name)}">
-              ${avatarHTML(player)}
-              <span class="admin-main">
-                <strong>${esc(player.name)}</strong>
-                <small>${player.room ? `стол «${esc(player.room)}»` : 'вне стола'}</small>
-              </span>
-              <span class="admin-money">
-                <b>${chips(player.balance)}</b>
-                <small>${player.games} игр · ${player.wins} побед · ${player.online ? 'онлайн' : 'офлайн'}</small>
-              </span>
-            </button>
-          `).join('')
-          : '<div class="admin-empty">Никого не нашли</div>';
-        list.querySelectorAll('[data-player]').forEach(row => {
-          row.addEventListener('click', () => {
-            const player = players.find(item => item.id === row.dataset.player);
-            if (player) openAdminPlayer(player);
-          });
-        });
-      };
-      search.addEventListener('input', draw);
-      draw();
-    });
-  }).catch(error => {
-    if (error.message.toLowerCase().includes('ключ')) {
-      storeAdminKey('');
-      syncAdminNav();
-    }
-    toast(error.message);
-  });
+if (adminPage) {
+  bootstrapAdminPage();
+} else {
+  if (new URL(location.href).searchParams.get('admin') === '1') location.replace(adminKey() ? '/admin' : '/admin.html');
 }
 
-function openAdminGate() {
-  openModal(`
+function bootstrapAdminPage() {
+  const screen = document.querySelector('#adminLogin');
+  const panel = document.querySelector('#adminPanel');
+  if (!adminKey()) {
+    if (screen) screen.hidden = false;
+    if (panel) panel.hidden = true;
+    return;
+  }
+  if (screen) screen.hidden = true;
+  if (panel) panel.hidden = false;
+  loadAdminPlayers();
+}
+
+function adminGateHTML() {
+  return `
     <div class="modal-label">ДОСТУП</div>
     <h2>Панель клуба</h2>
     <p class="modal-subtitle">Ключ задаётся переменной окружения ADMIN_KEY на сервере</p>
     <label>Ключ администратора<input id="aKey" type="password" autocomplete="off" placeholder="Ключ"></label>
     <div class="modal-actions">
-      <button class="secondary-btn" id="aCancel">Отмена</button>
+      <button class="secondary-btn" id="aCancel">На главную</button>
       <button class="primary-btn" id="aEnter">Войти</button>
     </div>
+  `;
+}
+
+function bindAdminGate(root, onEnter) {
+  const input = root.querySelector('#aKey');
+  const status = document.querySelector('#adminLoginStatus');
+  if (status) status.textContent = 'Введите ключ, чтобы управлять игроками.';
+  input.focus();
+  const submit = async () => {
+    const key = input.value.trim();
+    if (!key) return toast('Введите ключ');
+    const button = root.querySelector('#aEnter');
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      await api('/api/admin', { key, op: 'list' });
+      storeAdminKey(key);
+      if (status) status.textContent = 'Ключ принят.';
+      onEnter(key);
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message);
+    }
+  };
+  root.querySelector('#aCancel').addEventListener('click', () => { location.href = '/'; });
+  root.querySelector('#aEnter').addEventListener('click', submit);
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      submit();
+    }
+  });
+}
+
+async function loadAdminPlayers() {
+  if (!adminKey()) return signOutAdmin();
+  adminState.loading = true;
+  renderAdminPage();
+  try {
+    const data = await adminApi({ op: 'list' });
+    adminState.players = data.players || [];
+  } catch (error) {
+    toast(error.message);
+    if (/ключ/i.test(error.message)) return signOutAdmin();
+  }
+  adminState.loading = false;
+  renderAdminPage();
+}
+
+function signOutAdmin() {
+  storeAdminKey('');
+  if (adminPage) {
+    adminState.players = [];
+    adminState.selected = null;
+    const screen = document.querySelector('#adminLogin');
+    const panel = document.querySelector('#adminPanel');
+    if (screen) screen.hidden = false;
+    if (panel) panel.hidden = true;
+    const gate = screen && screen.querySelector('#adminGate');
+    if (gate && !gate.dataset.ready) {
+      gate.dataset.ready = '1';
+      gate.innerHTML = adminGateHTML();
+      bindAdminGate(gate, key => { storeAdminKey(key); if (screen) screen.hidden = true; if (panel) panel.hidden = false; loadAdminPlayers(); });
+    }
+    return;
+  }
+  closeModal();
+  toast('Доступ к панели закрыт');
+}
+
+function adminFilteredPlayers() {
+  const term = adminState.query.trim().toLowerCase();
+  const players = adminState.players.filter(player => {
+    if (adminState.filter === 'online' && !player.online) return false;
+    if (adminState.filter !== 'all' && adminState.filter !== 'online' && adminKind(player) !== adminState.filter) return false;
+    if (!term) return true;
+    return player.name.toLowerCase().includes(term) || player.id.toLowerCase().includes(term);
+  });
+  const sorters = {
+    recent: (a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0) || a.name.localeCompare(b.name, 'ru'),
+    name: (a, b) => a.name.localeCompare(b.name, 'ru'),
+    balance: (a, b) => b.balance - a.balance || a.name.localeCompare(b.name, 'ru'),
+    games: (a, b) => b.games - a.games || b.wins - a.wins || a.name.localeCompare(b.name, 'ru'),
+    online: (a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name, 'ru'),
+  };
+  return players.sort(sorters[adminState.sort] || sorters.recent);
+}
+
+function adminFilterCount(kind) {
+  if (kind === 'all') return adminState.players.length;
+  if (kind === 'online') return adminState.players.filter(player => player.online).length;
+  return adminState.players.filter(player => adminKind(player) === kind).length;
+}
+
+function copyIconHTML() {
+  return '<svg width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+}
+
+function copyButtonHTML(value, label) {
+  return `<button type="button" class="admin-copy" data-copy="${esc(value)}" title="Скопировать: ${esc(value)}" aria-label="Скопировать ${esc(label || 'id')}">${copyIconHTML()}<span>${esc(value)}</span></button>`;
+}
+
+function bindCopyButtons(root) {
+  root.querySelectorAll('[data-copy]').forEach(button => {
+    button.addEventListener('click', async event => {
+      event.stopPropagation();
+      await copyText(button.dataset.copy);
+    });
+  });
+}
+
+async function copyText(value) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(value);
+      toast('Скопировано');
+      return;
+    }
+  } catch (error) {
+    /* ниже резервный способ */
+  }
+  const area = document.createElement('textarea');
+  area.value = value;
+  area.setAttribute('readonly', '');
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+  area.select();
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch (error) {
+    copied = false;
+  }
+  area.remove();
+  toast(copied ? 'Скопировано' : 'Не удалось скопировать');
+}
+
+function clubMoment(epochMs) {
+  const value = Number(epochMs);
+  if (!Number.isFinite(value) || value <= 0) return '';
+  const date = new Date(value);
+  const pad = number => String(number).padStart(2, '0');
+  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function clubDate(seconds, withTime) {
+  const value = Number(seconds);
+  if (!seconds || !Number.isFinite(value) || value <= 0) return '';
+  const date = new Date(value * 1000);
+  const pad = number => String(number).padStart(2, '0');
+  const day = `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()}`;
+  return withTime ? `${day} ${pad(date.getHours())}:${pad(date.getMinutes())}` : day;
+}
+
+const ADMIN_SORTS = [
+  ['recent', 'Сначала новые'],
+  ['online', 'Сначала онлайн'],
+  ['name', 'По имени'],
+  ['balance', 'По балансу'],
+  ['games', 'По партиям'],
+];
+
+function renderAdminToolbar() {
+  const host = document.querySelector('#adminFilters');
+  if (!host) return;
+  host.innerHTML = `
+    <div class="admin-filters" role="group" aria-label="Фильтр игроков">
+      ${ADMIN_FILTERS.map(([key, label]) => {
+        const count = adminFilterCount(key);
+        return `<button type="button" data-filter="${key}" class="${adminState.filter === key ? 'is-active' : ''}" aria-pressed="${adminState.filter === key}"${count ? '' : ' disabled'}><span>${label}</span><b>${count}</b></button>`;
+      }).join('')}
+    </div>
+    <label class="admin-sort">Сортировка
+      <select id="adminSort">
+        ${ADMIN_SORTS.map(([key, label]) => `<option value="${key}"${adminState.sort === key ? ' selected' : ''}>${label}</option>`).join('')}
+      </select>
+    </label>
+  `;
+  host.querySelectorAll('[data-filter]').forEach(button => {
+    button.addEventListener('click', () => {
+      adminState.filter = button.dataset.filter;
+      renderAdminPage();
+    });
+  });
+  const sort = host.querySelector('#adminSort');
+  if (sort) sort.addEventListener('change', () => {
+    adminState.sort = sort.value;
+    renderAdminPage();
+  });
+}
+
+function renderAdminPage() {
+  if (!adminPage) return;
+  const list = document.querySelector('#adminList');
+  const meta = document.querySelector('#adminMeta');
+  if (!list) return;
+  const online = adminState.players.filter(player => player.online).length;
+  const players = adminFilteredPlayers();
+  if (meta) meta.textContent = adminState.loading
+    ? 'Обновляем список…'
+    : `${players.length} из ${adminState.players.length} профилей · ${online} онлайн · баланс всего ${chips(adminState.players.reduce((sum, player) => sum + player.balance, 0))} фишек`;
+  list.classList.toggle('is-loading', adminState.loading);
+  renderAdminToolbar();
+  list.innerHTML = players.length
+    ? players.map(player => `
+      <div class="admin-row${adminState.selected && adminState.selected.id === player.id ? ' is-current' : ''}">
+        <button class="admin-row-open" data-player="${esc(player.id)}" aria-label="Профиль ${esc(player.name)}">
+          ${avatarHTML(player)}
+          <span class="admin-main">
+            <strong>${esc(player.name)}${player.online ? '<i class="admin-online" aria-label="онлайн"></i>' : ''}</strong>
+            ${copyButtonHTML(player.id, player.name)}
+          </span>
+          <span class="admin-row-side">
+            <small>${adminKindLabel(player)}${player.hasPassword ? '' : ' · без пароля'}</small>
+            <small>${esc(clubDate(player.createdAt) || 'дата не сохранена')}</small>
+          </span>
+        </button>
+        <button class="admin-row-action" data-key="${esc(player.id)}" title="Сменить пароль" aria-label="Сменить пароль ${esc(player.name)}">✦</button>
+        <button class="admin-row-action danger" data-remove="${esc(player.id)}" title="Удалить учётную запись" aria-label="Удалить ${esc(player.name)}">✕</button>
+      </div>
+    `).join('')
+    : `<div class="admin-empty">${adminState.players.length ? 'Никого не нашли. <button type="button" class="link-btn" id="adminResetFilters">Сбросить фильтры</button>' : 'В клубе пока нет учётных записей'}</div>`;
+  const resetFilters = document.querySelector('#adminResetFilters');
+  if (resetFilters) resetFilters.addEventListener('click', () => {
+    adminState.query = '';
+    adminState.filter = 'all';
+    adminState.sort = 'recent';
+    const search = document.querySelector('#adminSearch');
+    if (search) search.value = '';
+    renderAdminPage();
+  });
+  bindCopyButtons(list);
+  list.querySelectorAll('[data-player]').forEach(row => {
+    row.addEventListener('click', () => openAdminPlayer(row.dataset.player));
+  });
+  list.querySelectorAll('[data-key]').forEach(button => {
+    button.addEventListener('click', () => {
+      const player = adminState.players.find(item => item.id === button.dataset.key);
+      if (player) openPasswordReset(player);
+    });
+  });
+  list.querySelectorAll('[data-remove]').forEach(button => {
+    button.addEventListener('click', () => removeAdminPlayer(button.dataset.remove, button));
+  });
+  const editor = document.querySelector('#adminEditor');
+  if (editor) renderAdminEditor(editor);
+}
+
+function openAdminPlayer(id) {
+  const player = adminState.players.find(item => item.id === id);
+  if (!player) return;
+  adminState.selected = player;
+  renderAdminPage();
+}
+
+async function removeAdminPlayer(id, button) {
+  const player = adminState.players.find(item => item.id === id);
+  if (!player || button.disabled) return;
+  if (!button.dataset.armed) {
+    button.dataset.armed = '1';
+    button.classList.add('armed');
+    button.title = 'Нажмите ещё раз, чтобы удалить';
+    setTimeout(() => {
+      if (!button.isConnected) return;
+      delete button.dataset.armed;
+      button.classList.remove('armed');
+      button.title = 'Удалить учётную запись';
+    }, 4000);
+    return;
+  }
+  button.disabled = true;
+  try {
+    await adminApi({ op: 'delete', id });
+    if (adminState.selected && adminState.selected.id === id) adminState.selected = null;
+    toast(`Учётная запись «${player.name}» удалена`);
+    loadAdminPlayers();
+  } catch (error) {
+    button.disabled = false;
+    toast(error.message);
+  }
+}
+
+function adminCreatedLabel(player) {
+  return clubDate(player.createdAt, true) || 'дата не сохранена';
+}
+
+function adminKind(player) {
+  return player.kind || (player.id.startsWith('temp:') ? 'temp' : player.id.startsWith('discord:') ? 'discord' : 'legacy');
+}
+
+function adminKindLabel(player) {
+  const kind = adminKind(player);
+  return kind === 'temp' ? 'Клубный вход' : kind === 'discord' ? 'Discord' : 'Старый профиль';
+}
+
+function generatePassword() {
+  const alphabet = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const size = globalThis.crypto && globalThis.crypto.getRandomValues ? globalThis.crypto.getRandomValues(new Uint8Array(14)) : Array.from({ length: 14 }, () => Math.floor(Math.random() * 256));
+  return Array.from(size, byte => alphabet[byte % alphabet.length]).join('');
+}
+
+function openPasswordReset(player) {
+  const needsName = adminKind(player) === 'legacy' || adminKind(player) === 'temp';
+  openModal(`
+    <div class="modal-label">ПАРОЛЬ</div>
+    <h2>${esc(player.name)}</h2>
+    <p class="modal-subtitle">${needsName ? 'Старый пароль перестанет действовать, открытые сессии закроются. Задайте ещё и настоящее имя: сейчас здесь заглушка.' : 'Старый пароль перестанет действовать, открытые сессии закроются.'}</p>
+    ${needsName ? `<label>Имя<input id="pName" maxlength="20" value="${esc(player.name)}" autocomplete="off"></label>` : ''}
+    <label>Новый пароль<input id="pPassword" type="password" minlength="4" maxlength="128" value="${esc(generatePassword())}" autocomplete="new-password"></label>
+    <div class="modal-actions"><button class="secondary-btn" id="pCancel">Отмена</button><button class="primary-btn" id="pSave">Сменить пароль</button></div>
   `, root => {
-    const input = root.querySelector('#aKey');
-    const submit = async () => {
-      const key = input.value.trim();
-      if (!key) return toast('Введите ключ');
-      const button = root.querySelector('#aEnter');
+    root.querySelector('#pCancel').addEventListener('click', closeModal);
+    root.querySelector('#pSave').addEventListener('click', async () => {
+      const button = root.querySelector('#pSave');
       if (button.disabled) return;
+      const nameInput = root.querySelector('#pName');
+      const password = root.querySelector('#pPassword').value;
+      if (password.length < 4 || password.length > 128) return toast('Пароль от 4 до 128 символов');
       button.disabled = true;
       try {
-        await api('/api/admin', { key, op: 'list' });
-        storeAdminKey(key);
-        syncAdminNav();
-        openAdminPanel();
+        await adminApi({ op: 'update', id: player.id, ...(nameInput ? { name: nameInput.value.trim() } : {}), password });
+        openModal(`<div class="modal-label">ПАРОЛЬ ОБНОВЛЁН</div><h2>${esc(nameInput ? nameInput.value.trim() || player.name : player.name)}</h2><p class="modal-subtitle">Передайте новый пароль игроку. Прежний больше не действует.</p><div class="wallet"><strong>Пароль: ${esc(password)}</strong></div><div class="modal-actions"><button class="primary-btn" id="pDone">Готово</button></div>`, done => done.querySelector('#pDone').addEventListener('click', closeModal));
+        loadAdminPlayers();
       } catch (error) {
         button.disabled = false;
         toast(error.message);
-      }
-    };
-    root.querySelector('#aCancel').addEventListener('click', closeModal);
-    root.querySelector('#aEnter').addEventListener('click', submit);
-    input.addEventListener('keydown', event => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        submit();
       }
     });
   });
 }
 
-function openAdminPlayer(player) {
-  openModal(`
+function renderAdminEditor(host) {
+  const player = adminState.selected;
+  if (!player) {
+    host.innerHTML = '<div class="admin-empty">Выберите игрока слева, чтобы изменить имя, пароль, баланс и статистику.</div>';
+    return;
+  }
+  const kind = adminKind(player);
+  host.innerHTML = `
     <div class="modal-label">ПРОФИЛЬ ИГРОКА</div>
     <h2>${esc(player.name)}</h2>
-    <p class="modal-subtitle">Профиль игрока${player.room ? ` · стол «${esc(player.room)}»` : ''}</p>
-    <div class="modal-grid">
+    <p class="modal-subtitle">${adminKindLabel(player)}${player.room ? ` · стол «${esc(player.room)}»` : ' · вне стола'}${player.online ? ' · онлайн' : ' · офлайн'}</p>
+    <div class="admin-facts">
+      <span class="admin-facts-label">id</span>${copyButtonHTML(player.id, player.name)}
+      <span class="admin-facts-label">создан</span><span class="admin-facts-value">${esc(adminCreatedLabel(player))}</span>
+    </div>
+    <div class="admin-form">
       <label>Имя<input id="aName" maxlength="20" value="${esc(player.name)}"></label>
       <label>Баланс, фишек<input id="aBalance" type="number" min="0" step="10" value="${player.balance}"></label>
-    </div>
-    <div class="modal-grid modal-grid-3">
       <label>Партии<input id="aGames" type="number" min="0" value="${player.games}"></label>
       <label>Победы<input id="aWins" type="number" min="0" value="${player.wins}"></label>
       <label>Поражения<input id="aLosses" type="number" min="0" value="${player.losses}"></label>
     </div>
-    <div class="modal-actions">
-      <button class="ghost-btn" id="aBack">К списку</button>
-      <button class="secondary-btn" id="aReset">Сбросить прогресс</button>
-      <button class="primary-btn" id="aSave">Сохранить</button>
+    <p class="admin-note">${player.hasPassword ? 'Пароль хранится в виде хеша, поэтому его нельзя показать.' : 'Пароль не задан: вход открыт только по Discord.'}</p>
+    <div class="admin-quick">
+      <button class="secondary-btn" id="aPlus100">+100 фишек</button>
+      <button class="secondary-btn" id="aPlus500">+500 фишек</button>
+      <button class="secondary-btn" id="aMinus100">−100 фишек</button>
     </div>
-  `, root => {
-    root.querySelector('#aBack').addEventListener('click', openAdminPanel);
-    let armed = false;
-    const reset = root.querySelector('#aReset');
-    reset.addEventListener('click', async () => {
-      if (!armed) {
-        armed = true;
-        reset.textContent = 'Точно сбросить?';
-        return;
-      }
-      reset.disabled = true;
+    <div class="admin-actions">
+      <button class="primary-btn" id="aSave">Сохранить</button>
+      <button class="secondary-btn" id="aPassword">Сменить пароль</button>
+      <button class="secondary-btn" id="aReset">Сбросить прогресс</button>
+      <button class="secondary-btn danger" id="aDelete">Удалить</button>
+    </div>
+  `;
+  let armed = false;
+  const armButton = (button, label) => {
+    if (!armed) {
+      armed = true;
+      button.textContent = label;
+      setTimeout(() => { armed = false; button.textContent = label === 'Точно удалить?' ? 'Удалить' : 'Сбросить прогресс'; }, 4000);
+      return false;
+    }
+    return true;
+  };
+  const reset = host.querySelector('#aReset');
+  reset.addEventListener('click', async () => {
+    if (!armButton(reset, 'Точно сбросить?')) return;
+    reset.disabled = true;
+    try {
+      await adminApi({ op: 'reset', id: player.id });
+      toast('Прогресс игрока сброшен');
+      loadAdminPlayers();
+    } catch (error) {
+      reset.disabled = false;
+      toast(error.message);
+    }
+  });
+  const remove = host.querySelector('#aDelete');
+  remove.addEventListener('click', async () => {
+    if (!armButton(remove, 'Точно удалить?')) return;
+    remove.disabled = true;
+    try {
+      await adminApi({ op: 'delete', id: player.id });
+      adminState.selected = null;
+      toast('Учётная запись удалена');
+      loadAdminPlayers();
+    } catch (error) {
+      remove.disabled = false;
+      toast(error.message);
+    }
+  });
+  bindCopyButtons(host);
+  [['#aPlus100', 100], ['#aPlus500', 500], ['#aMinus100', -100]].forEach(([selector, delta]) => {
+    const button = host.querySelector(selector);
+    if (!button) return;
+    button.addEventListener('click', async () => {
+      if (button.disabled) return;
+      button.disabled = true;
       try {
-        await adminApi({ op: 'reset', id: player.id });
-        toast('Прогресс игрока сброшен');
-        openAdminPanel();
+        await adminApi({ op: 'balance', id: player.id, delta });
+        toast(delta > 0 ? `Начислено ${delta} фишек` : `Списано ${Math.abs(delta)} фишек`);
+        loadAdminPlayers();
       } catch (error) {
-        reset.disabled = false;
+        button.disabled = false;
         toast(error.message);
       }
     });
-    root.querySelector('#aSave').addEventListener('click', async () => {
-      const name = root.querySelector('#aName').value.trim();
-      if (!name) return toast('Введите имя');
-      const button = root.querySelector('#aSave');
+  });
+  host.querySelector('#aPassword').addEventListener('click', () => openPasswordReset(player));
+  host.querySelector('#aSave').addEventListener('click', async () => {
+    const name = host.querySelector('#aName').value.trim();
+    if (!name) return toast('Введите имя');
+    const button = host.querySelector('#aSave');
+    if (button.disabled) return;
+    button.disabled = true;
+    const number = id => Number(host.querySelector(id).value);
+    try {
+      await adminApi({
+        op: 'update',
+        id: player.id,
+        name,
+        balance: number('#aBalance'),
+        games: number('#aGames'),
+        wins: number('#aWins'),
+        losses: number('#aLosses'),
+      });
+      toast('Данные игрока обновлены');
+      loadAdminPlayers();
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message);
+    }
+  });
+}
+
+function openTempAccountForm() {
+  openModal(`
+    <div class="modal-label">НОВЫЙ ДОСТУП</div>
+    <h2>Учётная запись</h2>
+    <p class="modal-subtitle">Передайте игроку имя и пароль. Пароль сохраняется только в виде хеша и показывается один раз.</p>
+    <label>Имя игрока<input id="tName" maxlength="20" autocomplete="off"></label>
+    <label>Пароль<input id="tPassword" type="text" minlength="4" maxlength="128" value="${esc(generatePassword())}" autocomplete="new-password"></label>
+    <div class="modal-actions"><button class="secondary-btn" id="tGenerate">Другой пароль</button><button class="secondary-btn" id="tCancel">Отмена</button><button class="primary-btn" id="tCreate">Создать</button></div>
+  `, root => {
+    root.querySelector('#tName').focus();
+    root.querySelector('#tGenerate').addEventListener('click', () => { root.querySelector('#tPassword').value = generatePassword(); });
+    root.querySelector('#tCancel').addEventListener('click', closeModal);
+    root.querySelector('#tCreate').addEventListener('click', async () => {
+      const button = root.querySelector('#tCreate');
       if (button.disabled) return;
+      const name = root.querySelector('#tName').value.trim();
+      if (!name) return toast('Введите имя');
       button.disabled = true;
-      const number = id => Number(root.querySelector(id).value);
       try {
-        await adminApi({
-          op: 'update',
-          id: player.id,
-          name,
-          balance: number('#aBalance'),
-          games: number('#aGames'),
-          wins: number('#aWins'),
-          losses: number('#aLosses'),
-        });
-        toast('Данные игрока обновлены');
-        openAdminPanel();
+        const data = await adminApi({ op: 'create_temp', name, password: root.querySelector('#tPassword').value });
+        openModal(`<div class="modal-label">ДОСТУП СОЗДАН</div><h2>${esc(data.account.name)}</h2><p class="modal-subtitle">Сохраните эти данные и передайте игроку.</p><div class="wallet"><strong>Имя: ${esc(data.account.name)}<br>Пароль: ${esc(data.account.password)}</strong></div><div class="modal-actions"><button class="primary-btn" id="tDone">Готово</button></div>`, done => done.querySelector('#tDone').addEventListener('click', closeModal));
+        loadAdminPlayers();
       } catch (error) {
         button.disabled = false;
         toast(error.message);
@@ -757,35 +1233,63 @@ function openAdminPlayer(player) {
   });
 }
 
-/* navigation */
-new ResizeObserver(() => {
-  fitHand();
-  fitTable();
-}).observe(document.querySelector('#myHand'));
+function bindAdminPage() {
+  const search = document.querySelector('#adminSearch');
+  if (search) search.addEventListener('input', () => { adminState.query = search.value; renderAdminPage(); });
+  const create = document.querySelector('#adminCreate');
+  if (create) create.addEventListener('click', openTempAccountForm);
+  const refresh = document.querySelector('#adminRefresh');
+  if (refresh) refresh.addEventListener('click', loadAdminPlayers);
+  const gate = document.querySelector('#adminGate');
+  if (gate && !adminKey()) {
+    gate.innerHTML = adminGateHTML();
+    bindAdminGate(gate, key => {
+      const screen = document.querySelector('#adminLogin');
+      const panel = document.querySelector('#adminPanel');
+      if (screen) screen.hidden = true;
+      if (panel) panel.hidden = false;
+      loadAdminPlayers();
+    });
+  }
+  const exit = document.querySelector('#adminExit');
+  if (exit) exit.addEventListener('click', signOutAdmin);
+}
+if (adminPage) bindAdminPage();
 
-document.querySelectorAll('.nav-item').forEach(item => {
+/* navigation */
+if (!adminPage) {
+  document.querySelector('#cabinetBack').addEventListener('click', () => setView('lobby'));
+  new ResizeObserver(() => {
+    fitHand();
+    fitTable();
+  }).observe(document.querySelector('#myHand'));
+  document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', () => {
     const view = item.dataset.view;
     if (view === 'lobby') {
       setView('lobby');
     } else if (view === 'mygames') {
-      if (state.game) setView('game');
-      else openModal(`<div class="modal-label">МОИ ИГРЫ</div><h2>Активных игр нет</h2><p class="modal-subtitle">Создайте лобби или войдите по коду друга</p><button class="primary-btn full" id="mEmptyCreate">Создать лобби</button>`, root => {
-        root.querySelector('#mEmptyCreate').addEventListener('click', openCreateModal);
+      restoreSavedRoom(readSeatRoom()).then(restored => {
+        if (restored) return;
+        openModal(`<div class="modal-label">МОИ ИГРЫ</div><h2>Активных игр нет</h2><p class="modal-subtitle">Создайте лобби или войдите по коду друга</p><button class="primary-btn full" id="mEmptyCreate">Создать лобби</button>`, root => {
+          root.querySelector('#mEmptyCreate').addEventListener('click', openCreateModal);
+        });
       });
+    } else if (view === 'cabinet') {
+      renderCabinet();
+      setView('cabinet');
     } else if (view === 'rules') {
       openRulesModal();
-    } else if (view === 'admin') {
-      openAdminPanel();
     }
   });
-});
-syncAdminNav();
+  });
+}
 
 function setView(view) {
   state.view = view;
   const gameActive = view === 'game' && Boolean(state.game);
-  document.querySelector('#lobbyView').style.display = gameActive ? 'none' : '';
+  document.querySelector('#lobbyView').style.display = gameActive || view === 'cabinet' ? 'none' : '';
+  document.querySelector('#cabinetView').hidden = view !== 'cabinet';
   document.querySelector('#gameScreen').classList.toggle('active', gameActive);
   document.querySelectorAll('.nav-item').forEach(item => {
     const active = item.dataset.view === view || (view === 'game' && item.dataset.view === 'mygames');
@@ -799,6 +1303,7 @@ function setView(view) {
     fitTable();
   }
   if (view === 'lobby') renderLobby();
+  if (view === 'cabinet') renderCabinet();
 }
 
 function updateResumeButton() {
@@ -819,11 +1324,101 @@ function updateResumeButton() {
 }
 
 /* game */
-document.querySelector('#retryConnection').addEventListener('click', connect);
+if (document.querySelector('#retryConnection')) document.querySelector('#retryConnection').addEventListener('click', connect);
+
+async function restoreLeftSeat() {
+  if (!state.game || !state.game.room || state.game.room.status !== 'playing') return false;
+  if (await rejoinRoom(state.game.room.id)) return true;
+  forgetSeatRoom();
+  return false;
+}
+
+async function restoreSavedRoom(roomId) {
+  if (!roomId || !clientId || !sessionToken) return false;
+  return rejoinRoom(roomId);
+}
+
+async function rejoinRoom(roomId) {
+  try {
+    const data = await api('/api/join', { clientId, roomId });
+    if (data.account) state.account = data.account;
+    if (!data.room || data.room.status !== 'playing') return false;
+    const room = data.room.id;
+    rememberSeatRoom(room);
+    state.autoOpen = true;
+    state.restoreJoin = {
+      async takeMissedEvents(seq) {
+        const from = seq || await roomSeq(room);
+        if (!from) return;
+        catchUpRoom(room, from).catch(() => {});
+      }
+    };
+    return true;
+  } catch (error) {
+    if (/кодом|началась|мест|лобби/i.test(error.message)) forgetSeatRoom();
+    return false;
+  }
+}
+
+function rememberSeatRoom(roomId) {
+  try {
+    sessionStorage.setItem('durak.room', roomId);
+  } catch (error) {}
+}
+
+function readSeatRoom() {
+  try {
+    return sessionStorage.getItem('durak.room');
+  } catch (error) {
+    return null;
+  }
+}
+
+function forgetSeatRoom() {
+  try {
+    sessionStorage.removeItem('durak.room');
+  } catch (error) {}
+}
+
+function roomSeq(roomId) {
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(null), 400);
+    if (state.source && state.source.readyState === EventSource.OPEN) finish(Number(state.lobby && state.lobby.streamSeq) || 0);
+    else if (state.source) state.source.addEventListener('open', () => finish(Number(state.lobby && state.lobby.streamSeq) || 0), { once: true });
+    else finish(null);
+  });
+}
+
+async function catchUpRoom(roomId, since) {
+  const params = new URLSearchParams({ id: clientId, token: sessionToken, since: String(since), until: 'any', timeout: '1500' });
+  const response = await fetch(`/api/watch?${params}`);
+  if (!response.ok) return;
+  const data = await response.json();
+  if (!data.hit || !data.state || data.state.room.id !== roomId) return;
+  if (state.game && data.state.seq < (Number(state.game.seq) || 0)) return;
+  state.game = data.state;
+  state.autoOpen = false;
+  setView('game');
+  renderGame();
+  updateResumeButton();
+}
+
+function showAbandonedRoom(restored) {
+  if (restored) toast('Вы вернулись за стол');
+  else toast('Лобби больше не существует');
+}
+
 function connect() {
   if (!clientId || !sessionToken) return;
   if (state.source) state.source.close();
-  state.source = new EventSource(`/events?id=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}&name=${encodeURIComponent(state.profile.name)}`);
+  state.source = new EventSource(`/events?id=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}`);
   state.source.onopen = () => {
     state.connected = true;
     document.querySelector('#retryConnection').hidden = true;
@@ -831,7 +1426,7 @@ function connect() {
     document.querySelector('#connectionStatus').dataset.status = 'online';
     renderLobby();
   };
-  state.source.onmessage = event => {
+  state.source.onmessage = async event => {
     let payload;
     try {
       payload = JSON.parse(event.data);
@@ -845,6 +1440,7 @@ function connect() {
       state.account = payload.account;
       renderProfile();
       if (state.view === 'lobby') renderLobby();
+      if (state.view === 'cabinet') renderCabinet();
     } else if (payload.type === 'game') {
       const incomingSeq = Number(payload.state && payload.state.seq) || 0;
       const currentSeq = Number(state.game && state.game.seq) || 0;
@@ -856,13 +1452,24 @@ function connect() {
       }
       renderGame();
       updateResumeButton();
+      if (state.view === 'game' && state.restoreJoin) {
+        const pending = state.restoreJoin;
+        state.restoreJoin = null;
+        pending.takeMissedEvents(incomingSeq);
+      }    } else if (payload.type === 'noroom' && payload.reason === 'auth') {
+      sessionStorage.removeItem('durak.client');
+      sessionStorage.removeItem('durak.token');
+      location.reload();
     } else if (payload.type === 'noroom') {
-      if (state.game) {
+      if (state.game || state.restoreJoin) {
+        const restored = await restoreLeftSeat();
         state.game = null;
+        state.restoreJoin = null;
         document.querySelector('#finishOverlay').classList.remove('open');
         if (document.querySelector('#confirmLeave')) closeModal();
-        setView('lobby');
-        toast('Лобби больше не существует');
+        if (!restored) setView('lobby');
+        updateResumeButton();
+        showAbandonedRoom(restored);
       }
     }
   };
@@ -1064,19 +1671,25 @@ function fitTable() {
   const next = scale < .98 ? Math.max(.7, scale).toFixed(3) : '';
   if (next !== zoom) row.style.setProperty('zoom', next);
   if (message) {
-    const tableBox = row.parentElement.getBoundingClientRect();
-    const cardsBox = row.getBoundingClientRect();
-    const hand = row.parentElement.querySelector('.my-hand');
-    const handTop = hand ? hand.getBoundingClientRect().top : tableBox.bottom;
-    const gap = 18;
-    const bottom = Math.max(tableBox.bottom - cardsBox.bottom + gap, tableBox.bottom - handTop + gap);
-    message.style.setProperty('--message-bottom', `${Math.max(34, Math.round(bottom))}px`);
+    const handBox = row.parentElement.querySelector('.my-hand')?.getBoundingClientRect();
+    const cardRow = row.getBoundingClientRect().bottom;
+    const base = Math.max(34, Math.round(row.parentElement.getBoundingClientRect().bottom - cardRow + 18));
+    const lifted = handBox && handBox.top - cardRow > message.offsetHeight + 40 ? Math.round(row.parentElement.getBoundingClientRect().bottom - handBox.top + 18) : base;
+    message.style.setProperty('--message-bottom', Math.max(base, lifted) + 'px');
   }
+}
+
+function handTopInset(node) {
+  const outer = node.getBoundingClientRect();
+  const cards = [...node.querySelectorAll('.hand-card')];
+  if (!cards.length) return 0;
+  return Math.max(0, Math.min(...cards.map(card => card.getBoundingClientRect().top)) - outer.top);
 }
 
 function fitHand() {
   const hand = document.querySelector('#myHand');
   if (!hand) return;
+  hand.style.setProperty('--hand-top', `${Math.round(handTopInset(hand))}px`);
   const cards = hand.querySelectorAll('.hand-card');
   const styles = getComputedStyle(hand);
   const padding = (parseFloat(styles.paddingLeft) || 0) + (parseFloat(styles.paddingRight) || 0);
@@ -1253,7 +1866,7 @@ function copyInvite() {
   write.then(() => toast('Ссылка с кодом скопирована')).catch(() => toast(`Код приглашения: ${game.room.id}`));
 }
 
-document.querySelector('#roomCode').addEventListener('click', copyInvite);
+if (document.querySelector('#roomCode')) document.querySelector('#roomCode').addEventListener('click', copyInvite);
 
 async function leaveRoom() {
   try {
@@ -1263,11 +1876,12 @@ async function leaveRoom() {
     return false;
   }
   state.game = null;
+  forgetSeatRoom();
   document.querySelector('#finishOverlay').classList.remove('open');
   setView('lobby');
   return true;
 }
-document.querySelector('#leaveRoom').addEventListener('click', () => {
+if (document.querySelector('#leaveRoom')) document.querySelector('#leaveRoom').addEventListener('click', () => {
   if (!state.game || state.game.room.status !== 'playing') return leaveRoom();
   openModal('<div class="modal-label">ПОКИНУТЬ СТОЛ</div><h2>Уже уходите?</h2><p class="modal-subtitle">Если вы ещё играете, выход завершит партию и будет засчитан как поражение.</p><div class="modal-actions"><button class="secondary-btn" id="stayAtTable">Остаться</button><button class="primary-btn" id="confirmLeave">Покинуть стол</button></div>', root => {
     root.querySelector('#stayAtTable').addEventListener('click', closeModal);
@@ -1353,12 +1967,24 @@ async function bootstrap() {
   setInterval(renderMasthead, 30000);
   renderLobby();
   if (await completeDiscordLogin()) return;
-  await prepareDiscordLogin();
+  await prepareTemporaryLogin();
   if (!clientId || !sessionToken) return;
   document.querySelector('#loginScreen').hidden = true;
   document.querySelector('#appShell').hidden = false;
   connect();
+  try {
+    const profile = await api('/api/profile', { clientId });
+    if (profile.account) state.account = profile.account;
+  } catch (error) {}
   const inviteCode = inviteCodeFromUrl(new URL(location.href));
-  if (inviteCode) openJoinModal(inviteCode.toUpperCase());
+  const savedRoom = readSeatRoom();
+  if (inviteCode) {
+    const joined = await joinRoom(inviteCode);
+    dropInviteQuery();
+    if (!joined) openJoinModal(inviteCode.toUpperCase());
+  } else if (savedRoom && (await restoreSavedRoom(savedRoom))) {
+    document.querySelector('#appShell').hidden = false;
+  }
 }
-bootstrap();
+if (adminPage) startAmbient();
+else bootstrap();
