@@ -1,10 +1,9 @@
+import { registerClubAccounts, referenceIds } from './helpers/accounts.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
 const base = process.env.BASE_URL || 'http://localhost:4173';
-const tokens = new Map();
 function tokenFor(id) {
-  if (!tokens.has(id)) tokens.set(id, crypto.randomBytes(32).toString('hex'));
-  return tokens.get(id);
+  return tokens.get(id) || '';
 }
 const players = {};
 let failures = 0;
@@ -37,13 +36,16 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 const RANKS = ['6','7','8','9','10','В','Д','К','Т'];
 const canBeat = (attack, defense, trump) => attack.suit === defense.suit ? RANKS.indexOf(defense.rank) > RANKS.indexOf(attack.rank) : defense.suit === trump && attack.suit !== trump;
 
-const a = `fx-a-${Date.now()}`, b = `fx-b-${Date.now()}`;
+const labels = await registerClubAccounts(['a', 'b']);
+const tokens = new Map(labels.map(item => [item.clientId, item.token]));
+const a = labels[0].clientId, b = labels[1].clientId;
 await connect(a); await connect(b);
 
 async function newRoom(mode = 'classic') {
   const room = await post('/api/rooms', { clientId: a, name: `Тест ${Math.random().toString(36).slice(2, 6)}`, mode, deckSize: 36, playerName: 'Алиса' });
   const code = room.data.code;
   await post('/api/join', { clientId: b, roomId: code, playerName: 'Борис' });
+  await wait(120);
   await post('/api/action', { clientId: a, action: 'start' });
   const ready = async () => [a, b].every(id => players[id].state && players[id].state.room.id === code && players[id].state.room.status === 'playing');
   const started = Date.now();
@@ -63,8 +65,8 @@ async function closeRoom(code) {
 let trumpCases = 0;
 for (let attempt = 0; attempt < 24; attempt += 1) {
   const { code, state, attackerId, defenderId } = await newRoom();
-  const attack = players[attackerId].state.hand[attempt % 6];
-  const defense = players[defenderId].state.hand[(attempt * 3 + 1) % 6];
+  const attack = players[attackerId].state.you.hand[attempt % 6];
+  const defense = players[defenderId].state.you.hand[(attempt * 3 + 1) % 6];
   const expected = canBeat(attack, defense, state.trump);
   if (attack.suit === state.trump && defense.suit !== state.trump) trumpCases += 1;
   const attackRes = await post('/api/action', { clientId: attackerId, action: 'attack', cardId: attack.id });
@@ -80,7 +82,7 @@ check('среди проверок были козырь-против-некоз
 let multi = false;
 for (let attempt = 0; attempt < 30 && !multi; attempt += 1) {
   const { code, state, attackerId, defenderId } = await newRoom();
-  const hand = players[attackerId].state.hand;
+  const hand = players[attackerId].state.you.hand;
   const first = hand[0];
   const second = hand.find(card => card.id !== first.id && card.rank === first.rank);
   if (!second) { await closeRoom(code); continue; }
@@ -101,7 +103,7 @@ check('сценарий с несколькими картами найден', 
 let pendingOk = false;
 for (let attempt = 0; attempt < 30 && !pendingOk; attempt += 1) {
   const { code, state, attackerId, defenderId } = await newRoom();
-  const hand = players[attackerId].state.hand;
+  const hand = players[attackerId].state.you.hand;
   const first = hand[0];
   const second = hand.find(card => card.id !== first.id && card.rank === first.rank);
   if (!second) { await closeRoom(code); continue; }

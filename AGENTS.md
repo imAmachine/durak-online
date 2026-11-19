@@ -17,7 +17,7 @@ BASE_URL=http://127.0.0.1:4174 npm test
 - There is no lint, typecheck, format, or build step. There is no CI config.
 - Tests are not self-contained: start the server first in another terminal, then run
   `npm test`. Integration tests use `BASE_URL` when set, otherwise `http://localhost:4173`.
-- `npm test` chains nine `.mjs` scripts with `&&`, so the first failing suite stops the
+- `npm test` chains thirteen `.mjs` scripts with `&&`, so the first failing suite stops the
   rest. Scripts exit non-zero on failure and print `ok`/`FAIL` lines.
 - Tests use global `fetch` and top-level `await`, so they need Node 18+. No package
   dependencies exist; there is no lockfile.
@@ -60,12 +60,28 @@ Entry points:
 - `POST /api/profile`, `POST /api/leave`, `POST /api/admin`, `GET /api/status`.
 - Authenticated gameplay POSTs carry `clientId` and `body.token`; any POST supplying a
   `clientId` is also checked against `sessions` (including admin requests).
-- Static serving is allowlisted to `index.html`, `app.js`, and `style.css` (`/` → `index.html`).
+- Static serving is allowlisted to `index.html`, `admin.html`, `app.js`, and `style.css`
+  (`/` → `index.html`, `/admin` → `admin.html`).
 
-`/api/admin` is a single POST endpoint with `op: list | update | reset | balance` and a `key`
-body field checked against `ADMIN_KEY` (env; unset disables the panel). It can rename players,
-set balance/stats, and reset to the starting balance. Errors are 403 for a wrong key, 404 for
-an unknown player.
+The Rust `platform-server` is the real server (the Node file below is the legacy reference).
+Players log in with the name and password of a club account through
+`POST /api/auth/temp/login`, which answers `{ clientId: "temp:...", token }`; the token is a
+hex digest (64 lowercase hex chars) and every SSE/POST keeps using that shape. Admins mint
+accounts with `POST /api/admin` and `op: create_temp` (name + password, 4-128 chars). Startup
+accepts a saved playing room when each player is either a linked Discord identity or a
+`temp:` account with a stored password hash.
+
+`/api/admin` is a single POST endpoint with
+`op: list | create_temp | update | reset | balance | delete` and a `key` body field checked
+against `ADMIN_KEY` (env; unset disables the panel). It can create club accounts (password
+optional, generated when omitted), rename players, set balance/stats, reset to the starting
+balance, change a temporary account's password (which also revokes its sessions and kicks the
+live stream with `{ type: 'noroom', reason: 'auth' }`), and delete an account together with its
+identity row and finished game snapshots. `list` rows carry `kind` (`temp | discord | legacy`)
+and `hasPassword`. Temporary passwords are stored as salted PBKDF2-SHA256 hashes through
+`password.rs`; the old unsalted SHA-256 hashes (`sha256$<hex>`) still authenticate and are
+upgraded on the next login. Deleting a player who still sits at a playing table is 409; errors
+are 403 for a wrong key, 404 for an unknown player.
 
 API responses are JSON; errors use `{ error: "<Russian message>" }` with status 400/403/404,
 or 503 when the admin panel is disabled.
@@ -122,9 +138,13 @@ in `index.html`. Global mutable `state` object; server snapshots drive rendering
 - `state.account` mirrors the server wallet/stats. The server pushes
   `{ type: 'account' }` on connect and after every room broadcast, so the sidebar balance
   and the profile modal use it directly; do not duplicate balance locally.
-- Admin panel: `openAdminGate()` asks for the key once per tab (`sessionStorage['durak.admin']`),
-  `syncAdminNav()` shows the `data-view="admin"` nav item, `openAdminPanel()` lists accounts
-  and `openAdminPlayer()` edits them through `/api/admin`.
+- Admin panel lives on its own page (`admin.html`, served at `/admin`). `body[data-admin="page"]`
+  switches the script to admin mode (`bootstrapAdminPage()`); the key is asked once per tab and
+  kept in `sessionStorage['durak.admin']`, and `renderAdminPage()` / `renderAdminEditor()` list
+  accounts and edit them through `/api/admin`. The main app has no admin entry point.
+- Personal cabinet: the `data-view="cabinet"` nav item (and the sidebar profile button) shows
+  `#cabinetView` through `renderCabinet()` with balance, stats, club history and profile/logout
+  actions; `signOut()` clears the session keys and returns to the login screen.
 - Hand cards sit in `.hand-slot` wrappers so the hover lift never moves the hover target:
   `.hand-slot:hover .hand-card` raises the card inside a box that stays put, which is what
   stopped the up/down flicker when the cursor rested on the lower part of a card. The row is
@@ -342,8 +362,14 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
 
 ## Testing notes
 
-- `engine` and `client` are self-contained VM-based regression suites; the other seven
-  scripts exercise a running server:
+- `engine` and `client` are self-contained VM-based regression suites; the others
+  exercise a running server. Suites that need real identities call
+  `registerClubAccounts()` from `tests/helpers/accounts.mjs`, which mints temporary club
+  accounts with `ADMIN_KEY` (default `test-only-secret`) and logs in, because
+  `platform-server` only accepts `discord:` and `temp:` client ids. `tests/security.mjs`
+  still uses throwaway ids against the Node reference server, so under `npm test` against
+  Rust it is expected to fail unless `DURAK_CLIENT_ID`/`DURAK_TOKEN` and
+  `DURAK_CLIENT_ID_B`/`DURAK_TOKEN_B` are set to two logged-in club sessions:
   - `tests/engine.mjs` — engine rules, transfer card/capacity checks, leave and offline cleanup.
   - `tests/client.mjs` — client session token generation/storage and transfer UI behavior.
   - `tests/security.mjs` — token format/binding, SSE replacement protection, and authenticated
@@ -354,11 +380,15 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
     card after "take", repeated over up to 30 randomized attempts because hands are random.
   - `tests/money.mjs` — club accounts: starting balance, stake charge on start, payout to
     the winner when the opponent leaves, admin list/update/reset, bet validation.
+  - `tests/accounts.mjs` — club login: admin page is served, no admin button in the main
+    UI, temp account creation (unique names), case-insensitive login, wrong password,
+    betting table, admin balance top-up pushed over SSE, rename, password change, reset.
   - `tests/full-game.mjs` — simulates a full 2-player game step by step (also checks deck
     conservation), then restarts and asserts 6-card hands and a 24-card deck.
   - `tests/mcp.mjs` — spawns `mcp/server.mjs` and drives it over stdio: handshake, tool list,
-    two seats, create/join/start, state/hints/admin, a `durak_watch` wait on the opponent's
-    move, a full `durak_autoplay` run, and cleanup.
+    two seats (`durak_connect` with `create: true` or club `login`+`password`), create/join/
+    start, state/hints/admin, a `durak_watch` wait on the opponent's move, a full
+    `durak_autoplay` run with generated club accounts, and cleanup.
   - `tests/hooks.mjs` — `/api/watch`: journal and `seq` in snapshots, timeout without
     changes, token/`until` validation, firing on the opponent's action, replay of a missed
     event, and firing on `finished` after the defender leaves.

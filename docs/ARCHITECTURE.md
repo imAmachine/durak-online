@@ -89,7 +89,7 @@ projection-слое из typed state и identity viewer, чтобы скрыты
 | POST | `/api/action` | `start`, `attack`, `defend`, `transfer`, `take`, `pass` |
 | POST | `/api/profile` | изменение имени |
 | POST | `/api/leave` | выход из стола |
-| POST | `/api/admin` | административные операции на переходный период |
+| POST | `/api/admin` | административные операции на переходный период: `list`, `create_temp`, `update`, `reset`, `balance`, `delete` |
 | GET | `/api/status` | состояние сервиса для диагностики |
 | GET | `/`, `/index.html`, `/app.js`, `/style.css` | существующая статика |
 

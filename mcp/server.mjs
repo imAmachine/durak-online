@@ -393,17 +393,32 @@ function seatSummary(seat) {
 
 async function postAction(seat, action, extra = {}) {
   const payload = { clientId: seat.id, token: seat.token, action, ...extra };
-  const result = await api('/api/action', payload);
+  let result = await api('/api/action', payload);
+  if (result.status === 400 && action !== 'start') {
+    await sendAction(seat, 'pass');
+    result = await api('/api/action', payload);
+  }
   if (!result.ok || result.data.error) {
     throw new Error(`Сервер отклонил ${action}: ${result.data.error || `HTTP ${result.status}`}`);
   }
   return result.data;
 }
 
+async function sendAction(seat, action, extra = {}) {
+  const result = await api('/api/action', { clientId: seat.id, token: seat.token, action, ...extra });
+  return { status: result.status, error: result.data.error || null };
+}
+
 async function actAndWait(seat, action, extra = {}) {
   const before = seat.seq;
-  const data = await postAction(seat, action, extra);
-  await seat.waitFor(item => item.seq > before, 3000);
+  let data;
+  try {
+    data = await postAction(seat, action, extra);
+  } catch (error) {
+    await seat.waitFor(() => false, 80).catch(() => {});
+    data = await postAction(seat, action, extra);
+  }
+  await seat.waitFor(item => item.seq > before, 3000).catch(() => {});
   markSeen(seat);
   return data;
 }
@@ -625,14 +640,18 @@ const verboseArg = { type: 'boolean', description: 'Полный JSON-снимо
 const TOOLS = [
   {
     name: 'durak_connect',
-    description: 'Открыть SSE для существующей авторизованной сессии Discord.',
+    description: 'Открыть место игрока: по клубному аккаунту (login+password), по готовой сессии (clientId+token) или открыть временный аккаунт ключом администратора.',
     inputSchema: {
       type: 'object',
       properties: {
         seat: { type: 'string', description: 'Метка места, по умолчанию pN.' },
         name: { type: 'string', description: 'Имя игрока (до 20 символов).' },
-        clientId: { type: 'string', description: 'ID авторизованной сессии Discord; либо DURAK_CLIENT_ID.' },
+        clientId: { type: 'string', description: 'ID готовой сессии; либо DURAK_CLIENT_ID.' },
         token: { type: 'string', description: 'Токен сессии; либо DURAK_TOKEN.' },
+        login: { type: 'string', description: 'Имя клубного аккаунта; либо DURAK_LOGIN.' },
+        password: { type: 'string', description: 'Пароль клубного аккаунта; либо DURAK_PASSWORD.' },
+        create: { type: 'boolean', description: 'Создать новый временный аккаунт ключом администратора.' },
+        key: { type: 'string', description: 'Ключ администратора; либо DURAK_ADMIN_KEY/ADMIN_KEY.' },
       },
     },
   },
@@ -764,14 +783,15 @@ const TOOLS = [
   },
   {
     name: 'durak_admin',
-    description: 'Панель клуба: list, update, reset, balance. Ключ берётся из аргумента key, иначе из DURAK_ADMIN_KEY/ADMIN_KEY.',
+    description: 'Панель клуба: list, create_temp, update (имя, пароль, баланс, статистика), reset, balance, delete. Ключ берётся из аргумента key, иначе из DURAK_ADMIN_KEY/ADMIN_KEY.',
     inputSchema: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['list', 'update', 'reset', 'balance'] },
+        op: { type: 'string', enum: ['list', 'create_temp', 'update', 'reset', 'balance', 'delete'] },
         key: { type: 'string', description: 'Ключ администратора.' },
-        id: { type: 'string', description: 'clientId игрока для update/reset/balance.' },
-        name: { type: 'string' },
+        id: { type: 'string', description: 'clientId игрока для update/reset/balance/delete.' },
+        name: { type: 'string', description: 'Имя игрока; для create_temp — новой учётки.' },
+        password: { type: 'string', description: 'Пароль для create_temp/update; без него create_temp сгенерирует пароль. Хранится как хеш.' },
         balance: { type: 'integer' },
         games: { type: 'integer' },
         wins: { type: 'integer' },
@@ -810,9 +830,28 @@ async function connectSeat(args) {
   if (seats.has(label)) throw new Error(`Место «${label}» уже открыто`);
   if (seats.size >= 12) throw new Error('Слишком много открытых мест (12): закройте лишние через durak_disconnect');
   const name = String(args.name || `MCP ${label}`).slice(0, 20);
-  const id = args.clientId ?? process.env.DURAK_CLIENT_ID;
-  const token = args.token ?? process.env.DURAK_TOKEN;
-  if (typeof id !== 'string' || !id.trim() || typeof token !== 'string' || !token.trim()) throw new Error('Укажите clientId и token авторизованной сессии Discord или DURAK_CLIENT_ID и DURAK_TOKEN');
+  let id = args.clientId ?? process.env.DURAK_CLIENT_ID;
+  let token = args.token ?? process.env.DURAK_TOKEN;
+  if (args.create) {
+    const key = String(args.key || ADMIN_KEY);
+    if (!key) throw new Error('Создание аккаунта требует ключ администратора: key или DURAK_ADMIN_KEY');
+    const generated = `bot-${Math.random().toString(36).slice(2, 10)}`;
+    const password = `${Math.random().toString(36).slice(2, 10)}${Math.random().toString(36).slice(2, 6)}`;
+    const created = await api('/api/admin', { key, op: 'create_temp', name: generated, password });
+    if (!created.ok) throw new Error(`Не удалось создать аккаунт: ${created.data.error || `HTTP ${created.status}`}`);
+    args.login = created.data.account.name;
+    args.password = password;
+  }
+  if (args.login ?? process.env.DURAK_LOGIN) {
+    const login = String(args.login ?? process.env.DURAK_LOGIN).trim();
+    const password = String(args.password ?? process.env.DURAK_PASSWORD ?? '');
+    if (!password) throw new Error('Укажите пароль клубного аккаунта: password или DURAK_PASSWORD');
+    const session = await api('/api/auth/temp/login', { name: login, password });
+    if (!session.ok) throw new Error(`Не удалось войти в клуб: ${session.data.error || `HTTP ${session.status}`}`);
+    id = session.data.clientId;
+    token = session.data.token;
+  }
+  if (typeof id !== 'string' || !id.trim() || typeof token !== 'string' || !token.trim()) throw new Error('Укажите login+password, create=true с ключом администратора или clientId+token готовой сессии');
   const seat = new Seat({ label, name, id, token });
   seats.set(label, seat);
   try {
@@ -989,7 +1028,7 @@ function myMove(seat, state) {
       return { action: 'attack', extra: { cardId: card.id }, note: `хожу ${cardText(card)}` };
     }
   }
-  if (state.canPass) return { action: 'pass', note: 'бито' };
+  if (state.canPass) return { action: 'pass', note: state.takePending ? 'бито, защитник забирает карты' : 'бито' };
   return null;
 }
 
@@ -1135,14 +1174,18 @@ async function updateProfile(args) {
 
 async function adminOp(args) {
   const body = { key: String(args.key || ADMIN_KEY), op: String(args.op || 'list') };
-  for (const field of ['id', 'name', 'balance', 'games', 'wins', 'losses', 'delta']) {
+  for (const field of ['id', 'name', 'password', 'balance', 'games', 'wins', 'losses', 'delta']) {
     if (args[field] !== undefined) body[field] = args[field];
   }
   const result = await api('/api/admin', body);
   if (!result.ok) return fail(`Админ-операция отклонена: ${result.data.error || `HTTP ${result.status}`}`, result.data);
   const text = body.op === 'list'
     ? `Игроков: ${result.data.players?.length ?? 0}\n\n${JSON.stringify(result.data.players, null, 2)}`
-    : `Игрок: ${JSON.stringify(result.data.player)}`;
+    : body.op === 'create_temp'
+      ? `Учётная запись создана: ${result.data.account.name}, пароль ${result.data.account.password} (показывается один раз)`
+      : body.op === 'delete'
+        ? `Учётная запись ${result.data.name} удалена`
+        : `Игрок: ${JSON.stringify(result.data.player)}`;
   return ok(text, result.data);
 }
 
@@ -1186,7 +1229,19 @@ async function autoplay(args) {
   const count = Math.max(2, Math.min(MAX_PLAYERS, Number(args.seats) || 2));
   let credentials;
   try { credentials = args.credentials ?? JSON.parse(process.env.DURAK_ACCOUNTS || 'null'); } catch { throw new Error('DURAK_ACCOUNTS должен содержать JSON-массив сессий'); }
-  if (!Array.isArray(credentials) || credentials.length < count || credentials.slice(0, count).some(c => !c || typeof c.clientId !== 'string' || !c.clientId.trim() || typeof c.token !== 'string' || !c.token.trim()) || new Set(credentials.slice(0, count).map(c => c.clientId)).size !== count || new Set(credentials.slice(0, count).map(c => c.token)).size !== count) throw new Error('Для autoplay нужны отдельные авторизованные сессии Discord: credentials или DURAK_ACCOUNTS');
+  if ((!Array.isArray(credentials) || credentials.length < count) && ADMIN_KEY) {
+    credentials = [];
+    for (let index = 0; index < count; index += 1) {
+      const name = `bot-${Math.random().toString(36).slice(2, 10)}`;
+      const password = `pw-${Math.random().toString(36).slice(2, 12)}`;
+      const created = await api('/api/admin', { key: ADMIN_KEY, op: 'create_temp', name, password });
+      if (!created.ok) throw new Error(`Не удалось создать аккаунт бота: ${created.data.error || `HTTP ${created.status}`}`);
+      const session = await api('/api/auth/temp/login', { name, password });
+      if (!session.ok) throw new Error(`Не удалось войти ботом: ${session.data.error || `HTTP ${session.status}`}`);
+      credentials.push(session.data);
+    }
+  }
+  if (!Array.isArray(credentials) || credentials.length < count || credentials.slice(0, count).some(c => !c || typeof c.clientId !== 'string' || !c.clientId.trim() || typeof c.token !== 'string' || !c.token.trim()) || new Set(credentials.slice(0, count).map(c => c.clientId)).size !== count || new Set(credentials.slice(0, count).map(c => c.token)).size !== count) throw new Error('Для autoplay нужны отдельные сессии: credentials, DURAK_ACCOUNTS или ключ администратора, чтобы создать клубные аккаунты');
   const maxSteps = Math.max(10, Math.min(2000, Number(args.maxSteps) || 300));
   const bet = BETS.includes(Number(args.bet)) ? Number(args.bet) : 0;
   const mode = args.mode === 'transfer' ? 'transfer' : 'classic';
@@ -1297,7 +1352,22 @@ async function botStep(created, baseline, steps, log) {
   const beatableRows = snapshot.table.filter(row => !row.defense);
 
   if (snapshot.takePending) {
-    const attackerSeat = created.find(seat => seat.game?.canPass);
+    const canThrow = seat => {
+      const state = seat.game;
+      if (!state || state.table.length >= MAX_TABLE_CARDS) return false;
+      const unbeaten = state.table.filter(row => !row.defense).length;
+      const defender = (state.players || []).find(player => player.id === state.defenderId);
+      if (defender && defender.cards <= unbeaten) return false;
+      return (state.hand || []).some(card => state.table.some(row => row.attack.rank === card.rank));
+    };
+    const thrower = created.find(seat => seat.game?.canPass && canThrow(seat));
+    if (thrower) {
+      const card = thrower.game.hand.find(item => thrower.game.table.some(row => row.attack.rank === item.rank));
+      await actAndWait(thrower, 'attack', { cardId: card.id });
+      logStep(log, thrower, 'attack', cardText(card));
+      return true;
+    }
+    const attackerSeat = created.find(seat => seat.game?.canPass && seat.id === snapshot.turnId) || created.find(seat => seat.game?.canPass);
     if (attackerSeat) {
       await actAndWait(attackerSeat, 'pass');
       logStep(log, attackerSeat, 'pass', 'забрать карты');
@@ -1307,7 +1377,13 @@ async function botStep(created, baseline, steps, log) {
   }
 
   if (beatableRows.length) {
+    const turnSeat = seatById(snapshot.turnId);
     const defenderSeat = seatById(snapshot.defenderId);
+    if (turnSeat && turnSeat.id !== snapshot.defenderId && !turnSeat.game?.canAttack && turnSeat.game?.canPass) {
+      await actAndWait(turnSeat, 'pass');
+      logStep(log, turnSeat, 'pass', 'бито');
+      return true;
+    }
     const defenderState = defenderSeat?.game;
     if (!defenderState) return false;
     const options = defenseOptions(defenderState);

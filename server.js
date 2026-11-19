@@ -1010,7 +1010,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   const file = url.pathname === '/' ? '/index.html' : url.pathname;
-  if (!['/index.html', '/app.js', '/style.css'].includes(file)) return json(res, 404, { error: 'Not found' });
+  if (!['/index.html', '/admin.html', '/app.js', '/style.css'].includes(file)) return json(res, 404, { error: 'Not found' });
   const filePath = path.join(__dirname, path.normalize(file).replace(/^(\.\.[/\\])+/, ''));
   if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
     res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream' });

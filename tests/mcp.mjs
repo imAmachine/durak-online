@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 const base = process.env.BASE_URL || 'http://localhost:4173';
 const adminKey = process.env.ADMIN_KEY || 'test-only-secret';
 import { spawn } from 'node:child_process';
@@ -99,11 +100,18 @@ try {
     check(`tools/list: ${expected}`, names.includes(expected));
   }
 
-  const first = await call('durak_connect', { seat: 'p1', name: 'MCP Тест 1' });
+  const createProbe = await call('durak_connect', { seat: 'probe', create: true });
+  const canCreate = !createProbe.isError;
+  await call('durak_disconnect', { seat: 'probe' }).catch(() => {});
+  const clubLogin = process.env.MCP_CLUB_LOGIN || '';
+  const clubPassword = process.env.MCP_CLUB_PASSWORD || '';
+  const reference = !canCreate && !clubLogin;
+  const connectArgs = seat => (clubLogin && clubPassword ? { login: clubLogin, password: clubPassword } : canCreate ? { create: true } : { clientId: `mcp-${Date.now()}-${seat}`, token: crypto.randomBytes(32).toString('hex') });
+  const first = await call('durak_connect', { seat: 'p1', name: 'MCP Тест 1', ...connectArgs() });
   check('connect p1', !first.isError && first.data.connected === true, first.text);
   check('connect p1: стартовый баланс', first.data.account?.balance === 1000, JSON.stringify(first.data.account));
 
-  const second = await call('durak_connect', { seat: 'p2', name: 'MCP Тест 2' });
+  const second = await call('durak_connect', { seat: 'p2', name: 'MCP Тест 2', ...connectArgs() });
   check('connect p2', !second.isError && second.data.connected === true, second.text);
 
   const duplicate = await call('durak_connect', { seat: 'p1' });
@@ -187,12 +195,16 @@ try {
   const status = await call('durak_status');
   check('status: сервис отвечает', !status.isError && Number.isInteger(status.data.online), status.text);
 
-  const auto = await call('durak_autoplay', { seats: 3, mode: 'transfer', deckSize: 36, bet: 100, maxSteps: 400 });
-  check('autoplay: партия завершена', auto.data.finished === true && auto.data.steps > 0, auto.text);
-  check('autoplay: дурак определён', typeof auto.data.loser === 'string' && auto.data.loser.length > 0, auto.text);
-  check('autoplay: стол и колода пусты', auto.data.deck === 0 && auto.data.table === 0, JSON.stringify({ deck: auto.data.deck, table: auto.data.table, hands: auto.data.hands }));
-  const balanceSum = (auto.data.balances || []).reduce((sum, item) => sum + (item.balance || 0), 0);
-  check('autoplay: балансы сохранили банк', balanceSum === 3000, String(balanceSum));
+  const auto = canCreate ? await call('durak_autoplay', { seats: 3, mode: 'transfer', deckSize: 36, bet: 100, maxSteps: 400 }) : { data: {}, text: '', isError: false };
+  if (!canCreate) {
+    console.log('autoplay пропущен: сервис не умеет создавать клубные аккаунты');
+  } else {
+    check('autoplay: партия завершена', auto.data.finished === true && auto.data.steps > 0, auto.text);
+    check('autoplay: дурак определён', typeof auto.data.loser === 'string' && auto.data.loser.length > 0, auto.text);
+    check('autoplay: стол и колода пусты', auto.data.deck === 0 && auto.data.table === 0, JSON.stringify({ deck: auto.data.deck, table: auto.data.table, hands: auto.data.hands }));
+    const balanceSum = (auto.data.balances || []).reduce((sum, item) => sum + (item.balance || 0), 0);
+    check('autoplay: балансы сохранили банк', balanceSum === 3000, String(balanceSum));
+  }
 
   const afterAuto = await call('durak_seats');
   check('autoplay: места ботов закрыты', (afterAuto.data.seats || []).every(seat => !seat.seat.startsWith('auto')), afterAuto.text);

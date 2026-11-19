@@ -1,8 +1,7 @@
+import { registerClubAccounts, referenceIds } from './helpers/accounts.mjs';
 const base = process.env.BASE_URL || 'http://localhost:4173';
-const tokens = new Map();
 function tokenFor(id) {
-  if (!tokens.has(id)) tokens.set(id, crypto.randomBytes(32).toString('hex'));
-  return tokens.get(id);
+  return tokens.get(id) || '';
 }
 const players = {};
 let failures = 0;
@@ -80,9 +79,9 @@ function waitForSeq(ids, seq) {
   return waitFor(() => ids.every(id => Number.isInteger(stateOf(id)?.seq) && stateOf(id).seq >= seq));
 }
 
-const a = `test-a-${Date.now()}`;
-const b = `test-b-${Date.now()}`;
-const c = `test-c-${Date.now()}`;
+const labels = await registerClubAccounts(['a', 'b', 'c']);
+const tokens = new Map(labels.map(item => [item.clientId, item.token]));
+const a = labels[0].clientId, b = labels[1].clientId, c = labels[2].clientId;
 
 await connect(a, 'Алиса');
 await connect(b, 'Борис');
@@ -188,9 +187,15 @@ check('состояние помечает окно подкидывания', s
 const handBeforeTake = stateOf(currentDefender).hand.length;
 const finishSeq = stateOf(a).seq;
 const finishTake = await post('/api/action', { clientId: currentAttacker, action: 'pass' });
+if (finishTake.status === 200) {
+  const others = [a, b, c].filter(id => id !== currentAttacker && !stateOf(id).finished);
+  for (const id of others) {
+    if (stateOf(id).takePending) await post('/api/action', { clientId: id, action: 'pass' });
+  }
+}
 check('атакующий завершает взятие', finishTake.status === 200, JSON.stringify(finishTake.data));
 if (finishTake.status === 200) await waitForSeq(ids, finishSeq + 1);
-await waitFor(() => stateOf(a).table.length === 0);
+await waitFor(() => stateOf(a).takePending === false && [a, b, c].every(id => stateOf(id).table.length === 0), 1500);
 const afterTake = stateOf(a);
 check('стол очищен после взятия', afterTake.table.length === 0, String(afterTake.table.length));
 check('защитник забрал карты', stateOf(currentDefender).hand.length !== handBeforeTake || afterTake.deck === 0);

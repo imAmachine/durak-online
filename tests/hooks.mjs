@@ -1,13 +1,12 @@
+import { registerClubAccounts, referenceIds } from './helpers/accounts.mjs';
 const base = process.env.BASE_URL || 'http://localhost:4173';
-const tokens = new Map();
 const players = {};
 let failures = 0;
 import http from 'node:http';
 import crypto from 'node:crypto';
 
 function tokenFor(id) {
-  if (!tokens.has(id)) tokens.set(id, crypto.randomBytes(32).toString('hex'));
-  return tokens.get(id);
+  return tokens.get(id) || '';
 }
 
 function sse(url, onMessage, onError) {
@@ -86,8 +85,9 @@ function watch(id, { since, until = 'any', timeout = 3000, token } = {}) {
   return fetch(url).then(async response => ({ status: response.status, data: await response.json().catch(() => ({})) }));
 }
 
-const a = `hook-a-${Date.now()}`;
-const b = `hook-b-${Date.now()}`;
+const labels = await registerClubAccounts(['a', 'b']);
+const tokens = new Map(labels.map(item => [item.clientId, item.token]));
+const a = labels[0].clientId, b = labels[1].clientId;
 
 try {
   await connect(a, 'Хук A');

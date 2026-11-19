@@ -5,6 +5,6 @@
   "scripts": {
     "start": "cargo run --manifest-path rust/Cargo.toml -p platform-server",
     "mcp": "node mcp/server.mjs",
-    "test": "node tests/engine.mjs && node tests/game-rules.mjs && node tests/empty-deck.mjs && node tests/client.mjs && node tests/security.mjs && node tests/moves.mjs && node tests/rules-fixes.mjs && node tests/money.mjs && node tests/full-game.mjs && node tests/mcp-follow.mjs && node tests/mcp.mjs && node tests/hooks.mjs"
+    "test": "node tests/engine.mjs && node tests/game-rules.mjs && node tests/empty-deck.mjs && node tests/client.mjs && node tests/security.mjs && node tests/moves.mjs && node tests/rules-fixes.mjs && node tests/money.mjs && node tests/accounts.mjs && node tests/full-game.mjs && node tests/mcp-follow.mjs && node tests/mcp.mjs && node tests/hooks.mjs"
   }
 }

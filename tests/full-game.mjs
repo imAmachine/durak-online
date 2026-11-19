@@ -1,11 +1,10 @@
+import { registerClubAccounts, referenceIds } from './helpers/accounts.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
 
 const base = process.env.BASE_URL || 'http://localhost:4173';
-const tokens = new Map();
 function tokenFor(id) {
-  if (!tokens.has(id)) tokens.set(id, crypto.randomBytes(32).toString('hex'));
-  return tokens.get(id);
+  return tokens.get(id) || '';
 }
 const players = {};
 let failures = 0;
@@ -70,8 +69,9 @@ function waitForSeq(ids, seq) {
   return waitFor(() => ids.every(id => Number.isInteger(players[id].state?.seq) && players[id].state.seq >= seq));
 }
 
-const a = `sim-a-${Date.now()}`;
-const b = `sim-b-${Date.now()}`;
+const labels = await registerClubAccounts(['a', 'b']);
+const tokens = new Map(labels.map(item => [item.clientId, item.token]));
+const a = labels[0].clientId, b = labels[1].clientId;
 await connect(a, 'Алиса');
 await connect(b, 'Борис');
 

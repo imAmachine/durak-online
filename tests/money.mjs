@@ -1,9 +1,8 @@
+import { registerClubAccounts, referenceIds } from './helpers/accounts.mjs';
 const base = process.env.BASE_URL || 'http://localhost:4173';
 const adminKey = process.env.ADMIN_KEY || 'test-only-secret';
-const tokens = new Map();
 function tokenFor(id) {
-  if (!tokens.has(id)) tokens.set(id, crypto.randomBytes(32).toString('hex'));
-  return tokens.get(id);
+  return tokens.get(id) || '';
 }
 const players = {};
 let failures = 0;
@@ -82,8 +81,9 @@ function waitFor(predicate, timeout = 2500) {
   });
 }
 
-const a = `money-a-${Date.now()}`;
-const b = `money-b-${Date.now()}`;
+const labels = await registerClubAccounts(['a', 'b']);
+const tokens = new Map(labels.map(item => [item.clientId, item.token]));
+const a = labels[0].clientId, b = labels[1].clientId;
 await connect(a, 'Анна');
 await connect(b, 'Богдан');
 check('при подключении приходит баланс', accountOf(a) && accountOf(a).balance === 1000, JSON.stringify(accountOf(a)));
@@ -119,7 +119,8 @@ check('победитель забрал банк', accountOf(attacker).balance 
 check('покинувший потерял ставку', accountOf(defender).balance === 900, String(accountOf(defender).balance));
 check('выплата показана победителю', finish.payout === 100, String(finish.payout));
 check('статистика победителя', accountOf(attacker).wins >= 1 && accountOf(attacker).games >= 1, JSON.stringify(accountOf(attacker)));
-check('поражение записано', accountOf(defender).losses >= 1, JSON.stringify(accountOf(defender)));
+const defenderAccount = await post('/api/admin', { key: adminKey, op: 'list' }).then(r => (r.data.players || []).find(p => p.id === defender));
+check('поражение записано', (defenderAccount?.losses || 0) === 1 && (defenderAccount?.games || 0) === 1, JSON.stringify(defenderAccount));
 
 await post('/api/leave', { clientId: attacker });
 
