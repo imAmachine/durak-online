@@ -1,6 +1,6 @@
 {
   "name": "durak-online",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "scripts": {
     "start": "cargo run --manifest-path rust/Cargo.toml -p platform-server",
