@@ -6,7 +6,9 @@ Rust MCP adapter запускается из каталога `rust`:
 DURAK_URL=http://127.0.0.1:4173 cargo run -p platform-mcp
 ```
 
-Сервис обменивается JSON-RPC по одной JSON-строке через stdin/stdout, подключается к HTTP/SSE API через `DURAK_URL`, поддерживает места игроков, комнаты, игровые действия, ожидание событий, hints, follow, autoplay и административные операции. Схемы tools совместимы с Node MCP.
+Сервис обменивается JSON-RPC по одной JSON-строке через stdin/stdout, подключается к HTTP/SSE API через `DURAK_URL`, поддерживает места игроков, комнаты, игровые действия, ожидание событий, hints, turn, follow, autoplay и административные операции. Схемы tools совместимы с Node MCP.
+
+Политика ходов и учёт вышедших карт живут в `src/strategy.rs` (`attach_options`, `defense_options`, `transfer_options`, `dump_options`, `attack_choices`, `choose_move`, `Ledger`) и совпадают с `mcp/strategy.mjs`, поэтому Node и Rust адаптеры принимают одинаковые решения. `durak_hints` и `durak_turn` возвращают `hidden` со счётчиками скрытых карт и козырей, а `durak_turn` добавляет готовый `recommended` ход с обоснованием. Меняя правила, правьте оба файла.
 
 Для работы сначала запустите `platform-server` командой `npm start` из корня проекта. Node `mcp/server.mjs` остаётся reference-клиентом и запускается через `npm run mcp`. Старый Node backend запускается отдельно командой `node server.js` только для сравнения и тестирования; он несовместим с обязательным входом через Discord и текущим браузерным входом.
 

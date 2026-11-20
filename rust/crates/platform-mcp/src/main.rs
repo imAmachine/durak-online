@@ -1,3 +1,5 @@
+mod strategy;
+
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::{
@@ -8,6 +10,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+use strategy::{card_text, choose_move, defense_options, dump_options, transfer_options, Ledger};
 
 #[derive(Default)]
 struct Seat {
@@ -22,6 +26,7 @@ struct Seat {
     lobby: Option<Value>,
     last_error: Option<String>,
     seq: u64,
+    ledger: Ledger,
 }
 type Seats = Arc<Mutex<HashMap<String, Arc<Mutex<Seat>>>>>;
 static SEATS: OnceLock<Seats> = OnceLock::new();
@@ -71,11 +76,17 @@ fn seat_arg(a: &Value) -> Result<Arc<Mutex<Seat>>, String> {
     }
     Err("Открыто несколько мест: укажите seat".into())
 }
-fn compact(s: &Value) -> Value {
+fn compact(s: &Value, ledger: Option<&Ledger>) -> Value {
     if s.is_null() {
         return Value::Null;
     }
-    json!({"room":s["room"]["id"],"status":s["room"]["status"],"role":s["you"]["role"],"turn":s["turnName"],"attacker":s["attackerName"],"defender":s["defenderName"],"trump":s["trump"],"deck":s["deck"],"table":s["table"],"hand":s["hand"],"counts":s["players"],"actions":{"attack":s["canAttack"],"defend":s["canDefend"],"transfer":s["canTransfer"],"take":s["canTake"],"pass":s["canPass"],"start":s["canStart"]},"message":s["message"],"seq":s["seq"],"finished":s["finished"]})
+    let mut view = json!({"room":s["room"]["id"],"status":s["room"]["status"],"role":s["you"]["role"],"turn":s["turnName"],"attacker":s["attackerName"],"defender":s["defenderName"],"trump":s["trump"],"deck":s["deck"],"table":s["table"],"hand":s["hand"],"counts":s["players"],"actions":{"attack":s["canAttack"],"defend":s["canDefend"],"transfer":s["canTransfer"],"take":s["canTake"],"pass":s["canPass"],"start":s["canStart"]},"message":s["message"],"seq":s["seq"],"finished":s["finished"]});
+    if let Some(ledger) = ledger {
+        if s["room"]["status"] == "playing" {
+            view["hidden"] = ledger.summary(s);
+        }
+    }
+    view
 }
 fn result(text: String, data: Value) -> Value {
     json!({"content":[{"type":"text","text":text}],"structuredContent":data})
@@ -86,6 +97,7 @@ fn error(text: String) -> Value {
 fn update_game(seat: &Arc<Mutex<Seat>>, game: Value) {
     let mut s = seat.lock().unwrap();
     s.seq = game["seq"].as_u64().unwrap_or(s.seq);
+    s.ledger.observe(&game);
     s.game = Some(game);
 }
 fn start_sse(seat: Arc<Mutex<Seat>>) {
@@ -128,8 +140,10 @@ fn start_sse(seat: Arc<Mutex<Seat>>) {
                             let mut s = seat.lock().unwrap();
                             match v["type"].as_str() {
                                 Some("game") => {
-                                    s.seq = v["state"]["seq"].as_u64().unwrap_or(0);
-                                    s.game = Some(v["state"].clone())
+                                    let game = v["state"].clone();
+                                    s.seq = game["seq"].as_u64().unwrap_or(0);
+                                    s.ledger.observe(&game);
+                                    s.game = Some(game)
                                 }
                                 Some("account") => s.account = v["account"].clone(),
                                 Some("lobby") => s.lobby = Some(v.clone()),
@@ -204,7 +218,7 @@ fn connect(a: &Value) -> Result<Value, String> {
             let s = seat.lock().unwrap();
             return Ok(result(
                 format!("Открыто место {}.", label),
-                json!({"seat":label,"name":s.name,"clientId":s.id,"connected":true,"account":s.account,"room":s.game.as_ref().map(compact)}),
+                json!({"seat":label,"name":s.name,"clientId":s.id,"connected":true,"account":s.account,"room":s.game.as_ref().map(|g|compact(g,Some(&s.ledger)))}),
             ));
         }
         thread::sleep(Duration::from_millis(20));
@@ -256,10 +270,15 @@ fn action(a: &Value, act: &str) -> Result<Value, String> {
     } else {
         wait_seq(&seat, before, Duration::from_secs(3))?;
     }
-    let st = seat.lock().unwrap().game.clone().unwrap_or(Value::Null);
+    let (label, ledger, st) = {
+        let s = seat.lock().unwrap();
+        (s.label.clone(), s.ledger.summary(s.game.as_ref().unwrap_or(&Value::Null)), s.game.clone().unwrap_or(Value::Null))
+    };
+    let mut snapshot = compact(&st, None);
+    snapshot["hidden"] = ledger;
     Ok(result(
         format!("{}: принято.", act),
-        json!({"seat":seat.lock().unwrap().label,"action":act,"snapshot":compact(&st),"state":if a["verbose"].as_bool().unwrap_or(false){st}else{Value::Null}}),
+        json!({"seat":label,"action":act,"snapshot":snapshot,"state":if a["verbose"].as_bool().unwrap_or(false){st}else{Value::Null}}),
     ))
 }
 
@@ -282,124 +301,56 @@ fn wait_seq(seat: &Arc<Mutex<Seat>>, before: u64, timeout: Duration) -> Result<(
     }
 }
 
-fn card_text(c: &Value) -> String {
-    format!(
-        "{}{}",
-        c["rank"].as_str().unwrap_or(""),
-        c["suit"].as_str().unwrap_or("")
-    )
-}
-fn rank(c: &Value) -> usize {
-    [
-        "2", "3", "4", "5", "6", "7", "8", "9", "10", "В", "Д", "К", "Т",
-    ]
-    .iter()
-    .position(|r| Some(*r) == c["rank"].as_str())
-    .unwrap_or(0)
-}
-fn options(st: &Value) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
-    let hand = st["hand"].as_array().cloned().unwrap_or_default();
-    let table = st["table"].as_array().cloned().unwrap_or_default();
-    let attacks = if st["canAttack"] == true {
-        hand.iter()
-            .filter(|c| {
-                table.is_empty()
-                    || table.iter().any(|r| {
-                        r["attack"]["rank"] == c["rank"]
-                            || (!r["defense"].is_null() && r["defense"]["rank"] == c["rank"])
-                    })
-            })
-            .cloned()
-            .collect()
-    } else {
-        vec![]
-    };
-    let mut defenses = Vec::new();
-    if st["canDefend"] == true {
-        for row in &table {
-            if !row["defense"].is_null() {
-                continue;
-            }
-            let attack = &row["attack"];
-            for c in &hand {
-                if (attack["suit"] == c["suit"] && rank(c) > rank(attack))
-                    || (c["suit"] == st["trump"] && attack["suit"] != st["trump"])
-                {
-                    defenses.push(json!({"row":row,"card":c}));
-                }
-            }
-        }
-    }
-    defenses.sort_by_key(|v| (v["card"]["suit"] == st["trump"], rank(&v["card"])));
-    let transfers = if st["canTransfer"] == true && !table.is_empty() {
-        hand.iter()
-            .filter(|c| c["rank"] == table[0]["attack"]["rank"])
-            .cloned()
-            .collect()
-    } else {
-        vec![]
-    };
-    (attacks, defenses, transfers)
+fn hint_payload(seat: &Seat, st: &Value) -> Value {
+    let attack: Vec<_> = strategy::attach_options(st)
+        .iter()
+        .map(|c| json!({"card":card_text(c),"id":c["id"],"trump":c["suit"]==st["trump"]}))
+        .collect();
+    let defend: Vec<_> = defense_options(st)
+        .iter()
+        .map(|(row, card)| json!({"attack":card_text(&row["attack"]),"targetCardId":row["attack"]["id"],"card":card_text(card),"cardId":card["id"],"trump":card["suit"]==st["trump"]}))
+        .collect();
+    let transfer: Vec<_> = transfer_options(st)
+        .iter()
+        .map(|c| json!({"card":card_text(c),"id":c["id"]}))
+        .collect();
+    let dump: Vec<_> = dump_options(st)
+        .iter()
+        .map(|c| json!({"card":card_text(c),"id":c["id"]}))
+        .collect();
+    json!({"seat":seat.label,"role":st["you"]["role"],"hand":st["hand"],"trump":st["trump"],"attack":attack,"defend":defend,"transfer":transfer,"dump":dump,"canTake":st["canTake"],"canPass":st["canPass"],"canTransfer":st["canTransfer"],"hidden":seat.ledger.summary(st)})
 }
 fn hints(a: &Value) -> Result<Value, String> {
     let q = seat_arg(a)?;
     let s = q.lock().unwrap();
     let st = s.game.as_ref().ok_or("Место вне стола")?;
-    let (attacks, defenses, transfers) = options(st);
-    let attack: Vec<_> = attacks
-        .iter()
-        .map(|c| json!({"card":card_text(c),"id":c["id"],"trump":c["suit"]==st["trump"]}))
-        .collect();
-    let defend:Vec<_>=defenses.iter().map(|d|json!({"attack":card_text(&d["row"]["attack"]),"targetCardId":d["row"]["attack"]["id"],"card":card_text(&d["card"]),"cardId":d["card"]["id"],"trump":d["card"]["suit"]==st["trump"]})).collect();
-    let transfer: Vec<_> = transfers
-        .iter()
-        .map(|c| json!({"card":card_text(c),"id":c["id"]}))
-        .collect();
-    Ok(result(
-        "Подсказки".into(),
-        json!({"seat":s.label,"role":st["you"]["role"],"hand":st["hand"],"trump":st["trump"],"attack":attack,"defend":defend,"transfer":transfer,"canTake":st["canTake"],"canPass":st["canPass"],"canTransfer":st["canTransfer"]}),
-    ))
+    Ok(result("Подсказки".into(), hint_payload(&s, st)))
 }
-fn my_move(st: &Value) -> Option<Value> {
-    if st["room"]["status"] != "playing"
-        || st["you"]["finished"] == true
-        || st["you"]["left"] == true
-    {
-        return None;
+fn turn(a: &Value) -> Result<Value, String> {
+    let q = seat_arg(a)?;
+    let s = q.lock().unwrap();
+    let st = s.game.as_ref().ok_or("Место вне стола")?;
+    let mut data = hint_payload(&s, st);
+    let recommended = choose_move(st, Some(&s.ledger)).unwrap_or(Value::Null);
+    let text = match recommended["action"].as_str() {
+        Some(action) => format!(
+            "Рекомендую: {}{} — {}",
+            action,
+            recommended["cardId"].as_str().map(|c| format!(" {}", c)).unwrap_or_default(),
+            recommended["reason"].as_str().unwrap_or("")
+        ),
+        None => "Ход не ваш: ждите через durak_watch (until=your-turn).".into(),
+    };
+    if let Some(obj) = data.as_object_mut() {
+        obj.insert("recommended".into(), recommended);
+        obj.insert("snapshot".into(), compact(st, Some(&s.ledger)));
+        obj.insert("text".into(), json!(text));
     }
-    let mine = &st["you"]["id"];
-    if st["takePending"] == true {
-        return if st["canPass"] == true {
-            Some(json!({"action":"pass"}))
-        } else {
-            None
-        };
-    }
-    let table = st["table"].as_array()?;
-    let (mut attacks, defenses, _) = options(st);
-    if table.iter().any(|r| r["defense"].is_null()) {
-        if &st["defenderId"] != mine {
-            return None;
-        }
-        if let Some(d) = defenses.first() {
-            return Some(
-                json!({"action":"defend","cardId":d["card"]["id"],"targetCardId":d["row"]["attack"]["id"]}),
-            );
-        }
-        return if st["canTake"] == true {
-            Some(json!({"action":"take"}))
-        } else {
-            None
-        };
-    }
-    attacks.sort_by_key(|c| (c["suit"] == st["trump"], rank(c)));
-    if let Some(c) = attacks.first() {
-        return Some(json!({"action":"attack","cardId":c["id"]}));
-    }
-    if st["canPass"] == true {
-        return Some(json!({"action":"pass"}));
-    }
-    None
+    Ok(result("Ход".into(), data))
+}
+fn my_move(seat: &Arc<Mutex<Seat>>, st: &Value) -> Option<Value> {
+    let s = seat.lock().unwrap();
+    choose_move(st, Some(&s.ledger))
 }
 fn follow(a: &Value) -> Result<Value, String> {
     let q = seat_arg(a)?;
@@ -425,7 +376,7 @@ fn follow(a: &Value) -> Result<Value, String> {
         if start.elapsed() >= duration {
             break "timeout";
         }
-        if let Some(mut m) = my_move(&st) {
+        if let Some(mut m) = my_move(&q, &st) {
             m["seat"] = label.clone().into();
             let act = m["action"].as_str().unwrap().to_string();
             action(&m, &act)?;
@@ -443,10 +394,14 @@ fn follow(a: &Value) -> Result<Value, String> {
             let _ = wait_watch_since(&q, "your-turn", left.min(25000).max(200), since)?;
         }
     };
-    let st = q.lock().unwrap().game.clone().unwrap_or(Value::Null);
+    let (st, snapshot) = {
+        let s = q.lock().unwrap();
+        let st = s.game.clone().unwrap_or(Value::Null);
+        (st.clone(), compact(&st, Some(&s.ledger)))
+    };
     Ok(result(
         format!("Партия: {}, действий {}", reason, steps),
-        json!({"seat":label,"roomId":st["room"]["id"],"steps":steps,"finished":reason=="finished","reason":reason,"loser":st["finished"]["loser"],"payout":st["payout"],"waitedMs":start.elapsed().as_millis(),"actions":log,"snapshot":compact(&st),"state":if a["verbose"]==true{st}else{Value::Null}}),
+        json!({"seat":label,"roomId":st["room"]["id"],"steps":steps,"finished":reason=="finished","reason":reason,"loser":st["finished"]["loser"],"payout":st["payout"],"waitedMs":start.elapsed().as_millis(),"actions":log,"snapshot":snapshot,"state":if a["verbose"]==true{st}else{Value::Null}}),
     ))
 }
 fn wait_watch_since(
@@ -561,7 +516,7 @@ fn autoplay(a: &Value) -> Result<Value, String> {
                 final_state = st;
                 break;
             }
-            if let Some(m) = my_move(&st) {
+            if let Some(m) = my_move(&q, &st) {
                 chosen = Some((label.clone(), m));
                 break;
             }
@@ -701,10 +656,14 @@ fn tool(name: &str, a: &Value) -> Result<Value, String> {
                     thread::sleep(Duration::from_millis(20));
                 }
             }
-            let st = q.lock().unwrap().game.clone().unwrap_or(Value::Null);
+            let (st, snapshot) = {
+                let s = q.lock().unwrap();
+                let st = s.game.clone().unwrap_or(Value::Null);
+                (st.clone(), compact(&st, Some(&s.ledger)))
+            };
             Ok(result(
                 "Готово".into(),
-                json!({"seat":label,"code":v["room"]["id"],"room":v["room"],"account":v["account"],"snapshot":compact(&st),"state":st}),
+                json!({"seat":label,"code":v["room"]["id"],"room":v["room"],"account":v["account"],"snapshot":snapshot,"state":st}),
             ))
         }
         "durak_start" => action(a, "start"),
@@ -721,9 +680,10 @@ fn tool(name: &str, a: &Value) -> Result<Value, String> {
             let st = s.game.clone().unwrap_or(Value::Null);
             Ok(result(
                 "Состояние стола".into(),
-                json!({"seat":s.label,"snapshot":compact(&st),"state":st}),
+                json!({"seat":s.label,"snapshot":compact(&st, Some(&s.ledger)),"state":st}),
             ))
         }
+        "durak_turn" => turn(a),
         "durak_wait" | "durak_watch" => {
             let q = seat_arg(a)?;
             let default = if name == "durak_watch" {
@@ -852,7 +812,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            18
+            19
         );
         assert_eq!(
             response(json!({"jsonrpc":"2.0","id":1,"method":"bogus"})).unwrap()["error"]["code"],
@@ -869,12 +829,12 @@ mod follow_tests {
     #[test]
     fn follows_permissions_for_other_attackers() {
         let mut state = json!({"room":{"status":"playing"},"you":{"id":"c","finished":false,"left":false},"attackerId":"a","defenderId":"b","takePending":false,"table":[{"attack":{"id":"6♠","rank":"6","suit":"♠"},"defense":{"id":"7♠","rank":"7","suit":"♠"}}],"hand":[{"id":"6♥","rank":"6","suit":"♥"}],"trump":"♣","canAttack":true,"canDefend":false,"canPass":true});
-        assert_eq!(my_move(&state).unwrap()["action"], "attack");
+        assert_eq!(choose_move(&state, None).unwrap()["action"], "attack");
         state["canAttack"] = json!(false);
-        assert_eq!(my_move(&state).unwrap()["action"], "pass");
+        assert_eq!(choose_move(&state, None).unwrap()["action"], "pass");
         state["takePending"] = json!(true);
-        assert_eq!(my_move(&state).unwrap()["action"], "pass");
+        assert_eq!(choose_move(&state, None).unwrap()["action"], "pass");
         state["canPass"] = json!(false);
-        assert!(my_move(&state).is_none());
+        assert!(choose_move(&state, None).is_none());
     }
 }

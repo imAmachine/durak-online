@@ -2,10 +2,14 @@ import crypto from 'node:crypto';
 const base = process.env.BASE_URL || 'http://localhost:4173';
 const adminKey = process.env.ADMIN_KEY || 'test-only-secret';
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'durak-mcp-test-'));
+const sessionFile = path.join(sessionDir, 'sessions.json');
 let failures = 0;
 
 function check(label, condition, extra = '') {
@@ -20,7 +24,7 @@ function check(label, condition, extra = '') {
 const child = spawn(process.execPath, [path.join(root, 'mcp/server.mjs')], {
   cwd: root,
   stdio: ['pipe', 'pipe', 'pipe'],
-  env: { ...process.env, DURAK_URL: base, DURAK_ADMIN_KEY: adminKey, ADMIN_KEY: adminKey },
+  env: { ...process.env, DURAK_URL: base, DURAK_ADMIN_KEY: adminKey, ADMIN_KEY: adminKey, DURAK_MCP_SESSIONS: sessionFile },
 });
 
 let buffer = '';
@@ -80,6 +84,7 @@ function finish() {
   const timer = setTimeout(() => child.kill('SIGKILL'), 2000);
   child.on('exit', () => {
     clearTimeout(timer);
+    fs.rmSync(sessionDir, { recursive: true, force: true });
     if (failures) {
       if (stderrText) console.log(stderrText.trim());
       process.exit(1);
@@ -96,9 +101,15 @@ try {
 
   const list = await rpc('tools/list', {});
   const names = (list?.tools || []).map(tool => tool.name);
-  for (const expected of ['durak_connect', 'durak_room_create', 'durak_room_join', 'durak_start', 'durak_action', 'durak_wait', 'durak_watch', 'durak_follow', 'durak_state', 'durak_hints', 'durak_admin', 'durak_autoplay']) {
+  for (const expected of ['durak_connect', 'durak_room_create', 'durak_room_join', 'durak_start', 'durak_action', 'durak_wait', 'durak_watch', 'durak_follow', 'durak_state', 'durak_hints', 'durak_turn', 'durak_admin', 'durak_autoplay']) {
     check(`tools/list: ${expected}`, names.includes(expected));
   }
+  const readOnly = (list?.tools || []).filter(tool => tool.annotations?.readOnlyHint).map(tool => tool.name);
+  for (const expected of ['durak_state', 'durak_hints', 'durak_turn', 'durak_seats', 'durak_watch']) {
+    check(`tools/list: ${expected} помечен read-only`, readOnly.includes(expected), JSON.stringify(readOnly));
+  }
+  const turnAnnotations = (list?.tools || []).find(tool => tool.name === 'durak_action')?.annotations;
+  check('tools/list: durak_action помечен изменяющим', turnAnnotations?.readOnlyHint === false, JSON.stringify(turnAnnotations));
 
   const createProbe = await call('durak_connect', { seat: 'probe', create: true });
   const canCreate = !createProbe.isError;

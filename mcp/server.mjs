@@ -1,17 +1,28 @@
 #!/usr/bin/env node
 import http from 'node:http';
 import readline from 'node:readline';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import {
+  Ledger,
+  cardText,
+  handText,
+  attachOptions,
+  defenseOptions,
+  transferOptions,
+  dumpOptions,
+  chooseMove,
+} from './strategy.mjs';
 
 const SERVER_NAME = 'durak';
-const SERVER_VERSION = '1.0.0';
+const SERVER_VERSION = '1.1.0';
 const BASE_URL = (process.env.DURAK_URL || 'http://127.0.0.1:4173').replace(/\/+$/, '');
 const ADMIN_KEY = (process.env.DURAK_ADMIN_KEY || process.env.ADMIN_KEY || '').trim();
-
-const RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'В', 'Д', 'К', 'Т'];
-const VALUES = new Map(RANKS.map((rank, index) => [rank, index]));
-const MAX_TABLE_CARDS = 6;
 const MAX_PLAYERS = 6;
 const BETS = [0, 50, 100, 250, 500];
+const SESSION_FILE = process.env.DURAK_MCP_SESSIONS || path.join(os.homedir(), '.local', 'state', 'durak-mcp', 'sessions.json');
 
 // ── HTTP ────────────────────────────────────────────────────────────────────
 
@@ -59,6 +70,7 @@ class Seat {
     this.reconnectTimer = null;
     this.lastError = null;
     this.lastEventAt = null;
+    this.ledger = new Ledger();
     this._pendingOpen = null;
   }
 
@@ -173,6 +185,7 @@ class Seat {
       this.game = payload.state;
       this.gameSeq += 1;
       this.noroom = false;
+      this.ledger.observe(payload.state);
     } else if (payload.type === 'account') {
       this.account = payload.account;
     } else if (payload.type === 'lobby') {
@@ -215,6 +228,57 @@ class Seat {
 
 const seats = new Map();
 
+function sessionPath() {
+  return SESSION_FILE;
+}
+
+function saveSessions() {
+  const target = sessionPath();
+  if (!target) return;
+  const list = [...seats.values()]
+    .filter(seat => seat.id && seat.token)
+    .map(seat => ({ label: seat.label, name: seat.playerName, id: seat.id, token: seat.token }));
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(target, `${JSON.stringify(list, null, 2)}\n`, { mode: 0o600 });
+  } catch (error) {
+    process.stderr.write(`durak-mcp: не удалось сохранить места в ${target}: ${error.message}\n`);
+  }
+}
+
+function loadSessions() {
+  const target = sessionPath();
+  if (!target || !fs.existsSync(target)) return [];
+  try {
+    const list = JSON.parse(fs.readFileSync(target, 'utf8'));
+    if (!Array.isArray(list)) return [];
+    return list.filter(item => item && typeof item.label === 'string' && typeof item.id === 'string' && typeof item.token === 'string');
+  } catch (error) {
+    process.stderr.write(`durak-mcp: не удалось прочитать ${target}: ${error.message}\n`);
+    return [];
+  }
+}
+
+async function restoreSessions() {
+  const saved = loadSessions();
+  if (!saved.length) return;
+  const restored = await Promise.all(saved.map(async item => {
+    if (seats.has(item.label)) return null;
+    const seat = new Seat({ label: item.label, name: String(item.name || item.label).slice(0, 20), id: item.id, token: item.token });
+    seats.set(item.label, seat);
+    try {
+      await seat.open();
+      await seat.waitFor(payload => payload.lobby || payload.game || payload.noroom, 2000);
+      return null;
+    } catch (error) {
+      seats.delete(item.label);
+      seat.close();
+      return item.label;
+    }
+  }));
+  if (restored.some(Boolean)) saveSessions();
+}
+
 function seatFromArgs(args) {
   const label = args?.seat ? String(args.seat) : '';
   if (label) {
@@ -228,75 +292,6 @@ function seatFromArgs(args) {
   if (seats.size === 1) return [...seats.values()][0];
   if (!seats.size) throw new Error('Нет открытых мест: сначала вызовите durak_connect');
   throw new Error(`Открыто несколько мест (${[...seats.keys()].join(', ')}): укажите seat`);
-}
-
-// ── rules helpers (mirror of server.js) ─────────────────────────────────────
-
-function beats(attack, defense, trump) {
-  if (attack.suit === defense.suit) return VALUES.get(defense.rank) > VALUES.get(attack.rank);
-  return defense.suit === trump && attack.suit !== trump;
-}
-
-function tableRanks(state) {
-  const ranks = new Set();
-  for (const row of state.table) {
-    ranks.add(row.attack.rank);
-    if (row.defense) ranks.add(row.defense.rank);
-  }
-  return ranks;
-}
-
-function cardText(card) {
-  return card ? card.rank + card.suit : '—';
-}
-
-function handText(hand) {
-  return hand.length ? hand.map(cardText).join(' ') : '—';
-}
-
-function attachOptions(state) {
-  if (!state.you || !state.canAttack) return [];
-  const hand = state.you.hand;
-  if (!state.table.length) return hand.slice();
-  const ranks = tableRanks(state);
-  return hand.filter(card => ranks.has(card.rank));
-}
-
-function defenseOptions(state) {
-  if (!state.you || !state.canDefend) return [];
-  const hand = state.you.hand;
-  const options = [];
-  for (const row of state.table) {
-    if (row.defense) continue;
-    for (const card of hand) {
-      if (beats(row.attack, card, state.trump)) {
-        options.push({
-          row,
-          card,
-          trump: card.suit === state.trump,
-          value: VALUES.get(card.rank),
-        });
-      }
-    }
-  }
-  options.sort((a, b) => (Number(a.trump) - Number(b.trump)) || (a.value - b.value));
-  return options;
-}
-
-function pickAttackCard(cards, state) {
-  return [...cards].sort((a, b) => {
-    const trumpA = a.suit === state.trump;
-    const trumpB = b.suit === state.trump;
-    if (trumpA !== trumpB) return Number(trumpA) - Number(trumpB);
-    return VALUES.get(a.rank) - VALUES.get(b.rank);
-  })[0];
-}
-
-function transferOptions(state) {
-  if (!state.you || !state.canTransfer) return [];
-  const ranks = tableRanks(state);
-  const rank = [...ranks][0];
-  return state.you.hand.filter(card => card.rank === rank);
 }
 
 // ── formatting ──────────────────────────────────────────────────────────────
@@ -324,7 +319,7 @@ function withoutLog(state) {
   return rest;
 }
 
-function compactState(state) {
+function compactState(state, ledger = null) {
   if (!state) return null;
   return {
     room: state.room.id,
@@ -342,6 +337,7 @@ function compactState(state) {
     message: state.message,
     seq: state.seq,
     finished: state.finished,
+    hidden: ledger && state.room.status === 'playing' ? ledger.counts(state) : undefined,
   };
 }
 
@@ -358,6 +354,7 @@ function formatState(seat, state, options = {}) {
   lines.push(`Стол: ${tableText(state)}`);
   lines.push(`Рука: ${handText(state.hand)}`);
   lines.push(`Действия: ${flagsOf(state).join(', ') || '—'}`);
+  if (seat?.ledger && state.room.status === 'playing') lines.push(`Учёт карт: ${seat.ledger.summary(state).line}`);
   if (state.message) lines.push(`Сообщение: ${state.message}`);
   if (state.finished) lines.push(`Итог: дурак — ${state.finished.loser || '—'}`);
   if (options.verbose) {
@@ -393,20 +390,14 @@ function seatSummary(seat) {
 
 async function postAction(seat, action, extra = {}) {
   const payload = { clientId: seat.id, token: seat.token, action, ...extra };
-  let result = await api('/api/action', payload);
-  if (result.status === 400 && action !== 'start') {
-    await sendAction(seat, 'pass');
-    result = await api('/api/action', payload);
-  }
+  const result = await api('/api/action', payload);
   if (!result.ok || result.data.error) {
-    throw new Error(`Сервер отклонил ${action}: ${result.data.error || `HTTP ${result.status}`}`);
+    const error = new Error(`Сервер отклонил ${action}: ${result.data.error || `HTTP ${result.status}`}`);
+    error.status = result.status;
+    error.rejected = true;
+    throw error;
   }
   return result.data;
-}
-
-async function sendAction(seat, action, extra = {}) {
-  const result = await api('/api/action', { clientId: seat.id, token: seat.token, action, ...extra });
-  return { status: result.status, error: result.data.error || null };
 }
 
 async function actAndWait(seat, action, extra = {}) {
@@ -415,10 +406,11 @@ async function actAndWait(seat, action, extra = {}) {
   try {
     data = await postAction(seat, action, extra);
   } catch (error) {
-    await seat.waitFor(() => false, 80).catch(() => {});
+    if (!error.rejected) throw error;
+    await seat.waitFor(item => item.seq > before, 800);
     data = await postAction(seat, action, extra);
   }
-  await seat.waitFor(item => item.seq > before, 3000).catch(() => {});
+  await seat.waitFor(item => item.seq > before, 3000);
   markSeen(seat);
   return data;
 }
@@ -467,6 +459,7 @@ function applySnapshot(seat, state) {
   seat.game = state;
   seat.gameSeq += 1;
   seat.noroom = false;
+  seat.ledger.observe(state);
 }
 
 async function waitSse(seat, until, timeoutMs) {
@@ -626,7 +619,7 @@ function waitResult(seat, until, result, options = {}) {
     waitedMs: result.waitedMs,
     events: shortEvents(result.events, seat),
     yourTurn: yourTurn(seat.game),
-    snapshot: compactState(seat.game),
+    snapshot: compactState(seat.game, seat.ledger),
     state: verbose ? withoutLog(seat.game) : undefined,
     lastError: seat.lastError,
   });
@@ -773,6 +766,11 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { seat: seatArg } },
   },
   {
+    name: 'durak_turn',
+    description: 'Один запрос вместо state+hints: снимок стола, легальные ходы, учёт вышедших карт и рекомендованный ход с обоснованием. Ничего не меняет на сервере.',
+    inputSchema: { type: 'object', properties: { seat: seatArg, verbose: verboseArg } },
+  },
+  {
     name: 'durak_profile',
     description: 'Переименовать игрока (имя до 20 символов).',
     inputSchema: {
@@ -825,6 +823,35 @@ const TOOLS = [
   },
 ];
 
+const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+const LOCAL_MUTATION = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+
+const ANNOTATIONS = {
+  durak_connect: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  durak_disconnect: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  durak_seats: READ_ONLY,
+  durak_lobby: READ_ONLY,
+  durak_status: READ_ONLY,
+  durak_room_create: LOCAL_MUTATION,
+  durak_room_join: LOCAL_MUTATION,
+  durak_room_leave: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  durak_start: LOCAL_MUTATION,
+  durak_action: LOCAL_MUTATION,
+  durak_state: READ_ONLY,
+  durak_wait: READ_ONLY,
+  durak_watch: READ_ONLY,
+  durak_follow: LOCAL_MUTATION,
+  durak_hints: READ_ONLY,
+  durak_turn: READ_ONLY,
+  durak_profile: LOCAL_MUTATION,
+  durak_admin: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  durak_autoplay: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+};
+
+for (const tool of TOOLS) {
+  if (ANNOTATIONS[tool.name]) tool.annotations = ANNOTATIONS[tool.name];
+}
+
 async function connectSeat(args) {
   const label = String(args.seat || `p${seats.size + 1}`);
   if (seats.has(label)) throw new Error(`Место «${label}» уже открыто`);
@@ -862,6 +889,7 @@ async function connectSeat(args) {
     throw new Error(`Не удалось открыть место ${label}: сервис недоступен по ${BASE_URL} (${error.message}). Запустите npm start.`);
   }
   await seat.waitFor(item => item.lobby || item.game || item.noroom, 5000);
+  saveSessions();
   return ok(
     `Открыто место ${label} (${seat.playerName}), клиент ${seat.id.slice(0, 8)}. ${seat.game ? `Стол ${seat.game.room.id}.` : 'Пока вне стола.'}\n\n` +
     JSON.stringify(seatSummary(seat), null, 2),
@@ -878,6 +906,7 @@ async function disconnectSeat(args) {
   const summary = seatSummary(seat);
   seat.close();
   seats.delete(seat.label);
+  saveSessions();
   return ok(`Место ${seat.label} закрыто${args.leave ? ' и стол покинут' : ''}.`, summary);
 }
 
@@ -897,7 +926,7 @@ async function roomCreate(args) {
     code,
     room: result.data.room,
     account: result.data.account,
-    snapshot: compactState(seat.game),
+    snapshot: compactState(seat.game, seat.ledger),
     state: seat.game,
   });
 }
@@ -914,7 +943,7 @@ async function roomJoin(args) {
     code,
     room: result.data.room,
     account: result.data.account,
-    snapshot: compactState(seat.game),
+    snapshot: compactState(seat.game, seat.ledger),
     state: seat.game,
   });
 }
@@ -936,7 +965,7 @@ async function startGame(args) {
   }
   return ok(`Партия началась.\n\n${formatState(seat, seat.game, { verbose: args.verbose })}`, {
     seat: seat.label,
-    snapshot: compactState(seat.game),
+    snapshot: compactState(seat.game, seat.ledger),
     state: withoutLog(seat.game),
   });
 }
@@ -958,7 +987,7 @@ async function gameAction(args) {
   return ok(`${action}: принято.\n\n${formatState(seat, seat.game, { verbose: args.verbose })}`, {
     seat: seat.label,
     action,
-    snapshot: compactState(seat.game),
+    snapshot: compactState(seat.game, seat.ledger),
     state: args.verbose ? withoutLog(seat.game) : undefined,
     account: seat.account,
   });
@@ -971,7 +1000,7 @@ function gameState(args) {
   }
   const verbose = args.verbose === undefined ? true : Boolean(args.verbose);
   markSeen(seat);
-  return ok(formatState(seat, seat.game, { verbose }), { seat: seat.label, snapshot: compactState(seat.game), state: seat.game });
+  return ok(formatState(seat, seat.game, { verbose }), { seat: seat.label, snapshot: compactState(seat.game, seat.ledger), state: seat.game });
 }
 
 function watchArgs(args) {
@@ -999,37 +1028,7 @@ async function watchTurn(args) {
 }
 
 function myMove(seat, state) {
-  if (!state || !state.you || state.you.finished || state.you.left) return null;
-  if (state.room.status !== 'playing') return null;
-  const mine = state.you.id;
-  if (state.takePending) {
-    if (state.canPass) return { action: 'pass', note: 'бито, защитник забирает карты' };
-    return null;
-  }
-  const unbeaten = state.table.filter(row => !row.defense).length;
-  if (unbeaten) {
-    if (state.defenderId !== mine) return null;
-    const options = defenseOptions(state);
-    if (options.length) {
-      const choice = options[0];
-      return {
-        action: 'defend',
-        extra: { cardId: choice.card.id, targetCardId: choice.row.attack.id },
-        note: `бью ${cardText(choice.row.attack)} на ${cardText(choice.card)}`,
-      };
-    }
-    if (state.canTake) return { action: 'take', note: `беру ${unbeaten} карт(ы)` };
-    return null;
-  }
-  if (state.canAttack) {
-    const cards = attachOptions(state);
-    if (cards.length && state.table.length < MAX_TABLE_CARDS) {
-      const card = pickAttackCard(cards, state);
-      return { action: 'attack', extra: { cardId: card.id }, note: `хожу ${cardText(card)}` };
-    }
-  }
-  if (state.canPass) return { action: 'pass', note: state.takePending ? 'бито, защитник забирает карты' : 'бито' };
-  return null;
+  return chooseMove(state, { ledger: seat?.ledger || null });
 }
 
 async function follow(args) {
@@ -1045,6 +1044,7 @@ async function follow(args) {
   const log = [];
   let steps = 0;
   let reason = 'timeout';
+  let spins = 0;
   while (Date.now() < deadline) {
     const state = seat.game;
     if (!state) {
@@ -1068,14 +1068,27 @@ async function follow(args) {
       const left = deadline - Date.now();
       if (left <= 0) break;
       const condition = state.room.status === 'playing' ? 'your-turn' : 'any';
+      const seqBefore = seat.seq;
       const wait = catchUp(seat, condition) || await waitHook(seat, condition, Math.min(25000, Math.max(300, left)));
+      const arrived = wait.events.length > 0 || seat.seq > seqBefore;
       wait.events.forEach(event => {
         if (event.actorId !== seat.id) log.push(describeEvent(event));
       });
       markSeen(seat);
+      if (arrived) {
+        spins = 0;
+        continue;
+      }
+      spins += 1;
+      if (spins >= 3) {
+        reason = 'no-move';
+        break;
+      }
+      await sleep(Math.min(400, 50 * spins));
       continue;
     }
-    const seqBefore = state.seq;
+    const seqBefore = seat.seq;
+    const gameSeqBefore = seat.gameSeq;
     try {
       await postAction(seat, move.action, move.extra);
     } catch (error) {
@@ -1084,8 +1097,12 @@ async function follow(args) {
       break;
     }
     steps += 1;
-    log.push(`я ${move.note}`);
-    await seat.waitFor(item => item.game && item.game.seq > seqBefore, 3000);
+    log.push(`я ${move.note}${move.reason ? ` (${move.reason})` : ''}`);
+    await seat.waitFor(item => item.gameSeq > gameSeqBefore, 3000);
+    for (const event of freshStream(seat).flatMap(item => item.state?.log || [])) {
+      if (event.actorId !== seat.id && !log.includes(describeEvent(event))) log.push(describeEvent(event));
+    }
+    markSeen(seat);
   }
   if (log.length > 60) log.splice(0, log.length - 60);
   const state = seat.game;
@@ -1113,7 +1130,7 @@ async function follow(args) {
     payout: state ? state.payout ?? 0 : 0,
     waitedMs: Date.now() - startedAt,
     actions: log,
-    snapshot: compactState(state),
+    snapshot: compactState(state, seat.ledger),
     state: verbose ? withoutLog(state) : undefined,
   });
 }
@@ -1128,6 +1145,7 @@ function hintData(seat, state) {
     trump: item.trump,
   }));
   const transfers = transferOptions(state).map(card => ({ card: cardText(card), id: card.id }));
+  const dumps = dumpOptions(state).map(card => ({ card: cardText(card), id: card.id }));
   const lines = [];
   lines.push(`${seat.label} (${seat.playerName}) · стол ${state.room.id} · ${state.you ? state.you.role : 'зритель'}`);
   lines.push(`Рука: ${handText(state.hand)} · козырь ${state.trump}`);
@@ -1136,7 +1154,9 @@ function hintData(seat, state) {
     lines.push(`Защита: ${defenses.length ? defenses.map(item => `${item.attack}→${item.card}`).join(', ') : 'нечем отбиться'}`);
   }
   if (state.canTransfer) lines.push(`Перевод: ${transfers.length ? transfers.map(item => item.card).join(' ') : 'нет'}`);
+  if (state.takePending && dumps.length) lines.push(`Догрузка под «беру»: ${dumps.map(item => item.card).join(' ')}`);
   lines.push(`Доступно: take=${state.canTake}, pass=${state.canPass}, transfer=${state.canTransfer}`);
+  if (seat?.ledger && state.room.status === 'playing') lines.push(`Учёт карт: ${seat.ledger.summary(state).line}`);
   return {
     lines,
     data: {
@@ -1147,9 +1167,11 @@ function hintData(seat, state) {
       attack: attacks,
       defend: defenses,
       transfer: transfers,
+      dump: dumps,
       canTake: state.canTake,
       canPass: state.canPass,
       canTransfer: state.canTransfer,
+      hidden: seat?.ledger ? seat.ledger.counts(state) : undefined,
     },
   };
 }
@@ -1160,6 +1182,29 @@ function hints(args) {
   if (!state) return fail(`${seat.label}: вне стола.`, { seat: seat.label, state: null });
   const { lines, data } = hintData(seat, state);
   return ok(lines.join('\n'), data);
+}
+
+function turn(args) {
+  const seat = seatFromArgs(args);
+  const state = seat.game;
+  if (!state) return fail(`${seat.label} (${seat.playerName}): вне стола.`, { seat: seat.label, state: null, snapshot: null });
+  markSeen(seat);
+  const { lines, data } = hintData(seat, state);
+  const move = myMove(seat, state);
+  const advice = move
+    ? `Рекомендую: ${move.action}${move.extra?.cardId ? ` ${move.extra.cardId}` : ''}${move.extra?.targetCardId ? ` на ${move.extra.targetCardId}` : ''} — ${move.reason || move.note}`
+    : state.room.status === 'playing'
+      ? 'Ход не ваш: ждите через durak_watch (until=your-turn).'
+      : 'Партия не идёт.';
+  return ok([...lines, advice, '', formatState(seat, state, { verbose: args.verbose })].join('\n'), {
+    seat: seat.label,
+    ...data,
+    recommended: move
+      ? { action: move.action, cardId: move.extra?.cardId || null, targetCardId: move.extra?.targetCardId || null, reason: move.reason || move.note }
+      : null,
+    snapshot: compactState(state, seat.ledger),
+    state: args.verbose ? withoutLog(state) : undefined,
+  });
 }
 
 async function updateProfile(args) {
@@ -1349,74 +1394,19 @@ async function botStep(created, baseline, steps, log) {
   const snapshot = created.map(seat => seat.game).find(state => state && state.room.status === 'playing');
   if (!snapshot) return false;
   const seatById = id => created.find(seat => seat.id === id);
-  const beatableRows = snapshot.table.filter(row => !row.defense);
-
-  if (snapshot.takePending) {
-    const canThrow = seat => {
-      const state = seat.game;
-      if (!state || state.table.length >= MAX_TABLE_CARDS) return false;
-      const unbeaten = state.table.filter(row => !row.defense).length;
-      const defender = (state.players || []).find(player => player.id === state.defenderId);
-      if (defender && defender.cards <= unbeaten) return false;
-      return (state.hand || []).some(card => state.table.some(row => row.attack.rank === card.rank));
-    };
-    const thrower = created.find(seat => seat.game?.canPass && canThrow(seat));
-    if (thrower) {
-      const card = thrower.game.hand.find(item => thrower.game.table.some(row => row.attack.rank === item.rank));
-      await actAndWait(thrower, 'attack', { cardId: card.id });
-      logStep(log, thrower, 'attack', cardText(card));
-      return true;
-    }
-    const attackerSeat = created.find(seat => seat.game?.canPass && seat.id === snapshot.turnId) || created.find(seat => seat.game?.canPass);
-    if (attackerSeat) {
-      await actAndWait(attackerSeat, 'pass');
-      logStep(log, attackerSeat, 'pass', 'забрать карты');
-      return true;
-    }
-    return false;
+  const ordered = [...created].sort((a, b) => Number(b.id === snapshot.turnId) - Number(a.id === snapshot.turnId));
+  for (const seat of ordered) {
+    const move = myMove(seat, seat.game);
+    if (!move) continue;
+    await actAndWait(seat, move.action, move.extra);
+    logStep(log, seat, move.action, move.note);
+    return true;
   }
-
-  if (beatableRows.length) {
-    const turnSeat = seatById(snapshot.turnId);
-    const defenderSeat = seatById(snapshot.defenderId);
-    if (turnSeat && turnSeat.id !== snapshot.defenderId && !turnSeat.game?.canAttack && turnSeat.game?.canPass) {
-      await actAndWait(turnSeat, 'pass');
-      logStep(log, turnSeat, 'pass', 'бито');
-      return true;
-    }
-    const defenderState = defenderSeat?.game;
-    if (!defenderState) return false;
-    const options = defenseOptions(defenderState);
-    if (options.length) {
-      const choice = options[0];
-      await actAndWait(defenderSeat, 'defend', { cardId: choice.card.id, targetCardId: choice.row.attack.id });
-      logStep(log, defenderSeat, 'defend', `${cardText(choice.card)} бьёт ${cardText(choice.row.attack)}`);
-      return true;
-    }
-    if (defenderState.canTake) {
-      await actAndWait(defenderSeat, 'take');
-      logStep(log, defenderSeat, 'take', `${beatableRows.length} карт(ы)`);
-      return true;
-    }
-    return false;
-  }
-
-  const attackerSeat = created.find(seat => seat.id === snapshot.turnId && (seat.game?.canAttack || seat.game?.canPass))
-    || created.find(seat => seat.game?.canPass || (seat.id === snapshot.attackerId && seat.game?.canAttack));
-  const attackerState = attackerSeat?.game;
-  if (!attackerState) return false;
-  if (attackerState.canAttack) {
-    const cards = attachOptions(attackerState);
-    if (cards.length && attackerState.table.length < MAX_TABLE_CARDS) {
-      const card = pickAttackCard(cards, attackerState);
-      await actAndWait(attackerSeat, 'attack', { cardId: card.id });
-      logStep(log, attackerSeat, 'attack', cardText(card));
-      return true;
-    }
-  }
-  if (attackerState.canPass) {
-    await actAndWait(attackerSeat, 'pass');
-    logStep(log, attackerSeat, 'pass', 'бито');
+  const defenderSeat = seatById(snapshot.defenderId);
+  const defenderState = defenderSeat?.game;
+  if (defenderState?.canTake && snapshot.table.some(row => !row.defense)) {
+    await actAndWait(defenderSeat, 'take');
+    logStep(log, defenderSeat, 'take', 'нечем отбиться');
     return true;
   }
   return false;
@@ -1442,6 +1432,7 @@ const HANDLERS = {
   durak_watch: watchTurn,
   durak_follow: follow,
   durak_hints: async args => hints(args),
+  durak_turn: async args => turn(args),
   durak_profile: updateProfile,
   durak_admin: adminOp,
   durak_status: async () => status(),
@@ -1519,6 +1510,11 @@ async function handle(message) {
 }
 
 const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+const ready = restoreSessions().catch(error => {
+  process.stderr.write(`durak-mcp: не удалось восстановить места: ${error.message}\n`);
+});
+
 input.on('line', line => {
   const trimmed = line.trim();
   if (!trimmed) return;
@@ -1529,9 +1525,11 @@ input.on('line', line => {
     send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Некорректный JSON' } });
     return;
   }
-  handle(message).catch(error => {
-    process.stderr.write(`durak-mcp: ${error.stack || error.message}\n`);
-  });
+  ready
+    .then(() => handle(message))
+    .catch(error => {
+      process.stderr.write(`durak-mcp: ${error.stack || error.message}\n`);
+    });
 });
 
 input.on('close', () => {

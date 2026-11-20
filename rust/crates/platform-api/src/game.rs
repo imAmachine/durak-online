@@ -189,7 +189,8 @@ fn snapshot(
         .map(|p| p.hand.iter().copied().map(card_json).collect())
         .unwrap_or_default();
     let playing = game.status == durak_engine::Status::Playing;
-    let eligible = me.is_some_and(|p| !p.finished && !p.left && !p.hand.is_empty());
+    let active = me.is_some_and(|p| !p.finished && !p.left);
+    let eligible = active && me.is_some_and(|p| !p.hand.is_empty());
     let attacking = game.attacker_id.as_deref() == Some(id) && me.is_some();
     let defending = game.defender_id.as_deref() == Some(id) && me.is_some();
     let unbeaten = game
@@ -217,7 +218,7 @@ fn snapshot(
         && (game.table.is_empty() || matches_rank);
     let can_defend = me.is_some() && playing && defending && !game.take_pending && unbeaten > 0;
     let can_take = can_defend && !game.table.is_empty();
-    let can_pass = eligible
+    let can_pass = active
         && playing
         && !defending
         && !game.table.is_empty()
@@ -1467,6 +1468,27 @@ mod tests {
         assert_eq!(b["canDefend"], false);
         assert_eq!(b["canTransfer"], false);
         r.state.take_pending = false;
+        r.state.turn_id = Some("a".into());
+        r.state.players[0].hand.clear();
+        r.state.table = vec![
+            TableRow {
+                attack: six,
+                defense: Some(seven),
+            },
+            TableRow {
+                attack: Card::new(Rank::Nine, Suit::Diamonds),
+                defense: Some(Card::new(Rank::Ten, Suit::Diamonds)),
+            },
+        ];
+        let a = snapshot(&r, "a", &accounts, &connected);
+        assert_eq!(a["canAttack"], false);
+        assert_eq!(a["canPass"], true, "атакующий с пустой рукой обязан закрыть кон");
+        assert_eq!(a["you"]["turn"], true);
+        r.state.players[0].hand = vec![six_heart];
+        r.state.table = vec![TableRow {
+            attack: six,
+            defense: None,
+        }];
         r.state.turn_id = Some("c".into());
         let c = snapshot(&r, "c", &accounts, &connected);
         assert_eq!(c["canAttack"], true);

@@ -314,6 +314,19 @@
     }
   },
   {
+    "name": "durak_turn",
+    "description": "Один запрос вместо state+hints: снимок стола, легальные ходы, учёт вышедших карт и рекомендованный ход с обоснованием. Ничего не меняет на сервере.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string",
+          "description": "Метка места из durak_connect (например p1). Можно не указывать, если место одно."
+        }
+      }
+    }
+  },
+  {
     "name": "durak_profile",
     "description": "Переименовать игрока (имя до 20 символов).",
     "inputSchema": {

@@ -17,7 +17,7 @@ BASE_URL=http://127.0.0.1:4174 npm test
 - There is no lint, typecheck, format, or build step. There is no CI config.
 - Tests are not self-contained: start the server first in another terminal, then run
   `npm test`. Integration tests use `BASE_URL` when set, otherwise `http://localhost:4173`.
-- `npm test` chains thirteen `.mjs` scripts with `&&`, so the first failing suite stops the
+- `npm test` chains fifteen `.mjs` scripts with `&&`, so the first failing suite stops the
   rest. Scripts exit non-zero on failure and print `ok`/`FAIL` lines.
 - Tests use global `fetch` and top-level `await`, so they need Node 18+. No package
   dependencies exist; there is no lockfile.
@@ -120,7 +120,7 @@ before validating; a rejected action clears it, so a failed move never lands in 
 the last eight events as `log`. Events carry only public data (played cards, actor ids,
 messages), so they are safe in a per-viewer snapshot.
 
-### Client (`app.js`, 1233 lines)
+### Client (`app.js`, 2329 lines)
 
 Single non-module script loaded at the end of `index.html`; all DOM ids it uses are defined
 in `index.html`. Global mutable `state` object; server snapshots drive rendering
@@ -164,7 +164,7 @@ in `index.html`. Global mutable `state` object; server snapshots drive rendering
   (`sessionStorage`), so two tabs are two players.
 - Invite links are `/?code=XXXXXX`; `openJoinModal(code)` pre-fills the join modal.
 
-### MCP (`mcp/server.mjs`, 1457 lines)
+### MCP (`mcp/server.mjs`, 1538 lines + `mcp/strategy.mjs`, 259 lines)
 
 A dependency-free MCP server on stdio (newline-delimited JSON-RPC) that drives the HTTP API,
 so an agent can open seats, play, and exercise the service. Project `.crushrc` registers it as
@@ -172,13 +172,23 @@ so an agent can open seats, play, and exercise the service. Project `.crushrc` r
 service and `DURAK_ADMIN_KEY`/`ADMIN_KEY` supplies the club key. Nothing needs the repo cwd:
 the tools only speak HTTP.
 
-- `Seat` holds one player: a random 64-hex `id` plus a matching session `token`, an open SSE
-  request to `/events`, and the latest `account`/`game`/`lobby` payloads. It reconnects every
-  second while `wantOpen`, and `open()` resolves only once the stream is registered, because
-  every gameplay POST is rejected until then. Seats live in the module-level `seats` map keyed
-  by tool label (`p1`, `auto1`, …); `seatFromArgs` defaults to the only open seat.
-- `durak_action` posts one action and waits for the seat's next SSE event before returning a
-  fresh snapshot; failures surface the server's Russian error as `isError`.
+`mcp/strategy.mjs` holds every rules and policy decision as pure functions (`beats`,
+`attachOptions`, `defenseOptions`, `dumpOptions`, `attackChoices`, `chooseMove`, `Ledger`) so
+`tests/strategy.mjs` covers them without a server. `server.mjs` keeps transport, seating and
+formatting; do not duplicate a rule there.
+
+- `Seat` holds one player: a 64-hex session `token`, an open SSE request to `/events`, and the
+  latest `account`/`game`/`lobby` payloads plus a `Ledger`. It reconnects every second while
+  `wantOpen`, and `open()` resolves only once the stream is registered, because every gameplay
+  POST is rejected until then. Seats live in the module-level `seats` map keyed by tool label
+  (`p1`, `auto1`, …); `seatFromArgs` defaults to the only open seat.
+- Seats survive an MCP restart: `saveSessions()` writes `{label,name,id,token}` to
+  `DURAK_MCP_SESSIONS` (default `~/.local/state/durak-mcp/sessions.json`, mode 0600) on connect
+  and disconnect, and `restoreSessions()` reopens them in parallel before the first request is
+  handled, so the SSE streams reattach on their own. Stale entries are dropped.
+- `durak_action` posts one action and returns a fresh snapshot. A rejected action is retried
+  once after a short wait (the SSE stream may lag the POST), and it never injects a different
+  action: masking a rejection with `pass` used to corrupt the table.
 - `durak_watch` (and `durak_wait`) drive the server hook `/api/watch`: they long-poll with
   the seat's last `game.seq`, so the call returns the moment the condition matches and
   replays the events the seat missed. `durak_watch` loops chunks for up to `totalMs`
@@ -191,31 +201,54 @@ the tools only speak HTTP.
   journal instead of sleeping until the timeout, and return immediately when `your-turn` or
   `finished` already holds in the current snapshot. `durak_follow` uses the same catch-up,
   so a move that lands between its own actions is never lost and never costs a full poll.
-- `durak_follow` plays one seat to the end on its own: `myMove()` picks defend/attack/take/pass
-  from the seat snapshot, the loop acts, then waits on `/api/watch` (`your-turn`) for the next
-  decision. Two concurrent calls on two seats finish a whole game, which is how
-  `tests/mcp.mjs` covers it. It returns one compact report: outcome, own move count, the last
-  events, and the final snapshot.
-- `durak_hints` mirrors `beats()` and `tableRanks()` from the server (VALUES over the 52-rank
-  list) to list attackable, defending, and transferable cards without a server round trip.
-- `durak_autoplay` opens 2–6 seats, creates and joins a room, starts, and plays with a simple
-  strategy: the defender always defends with the cheapest beating card (non-trump first) or
-  takes, then the attacker adds matching-rank cards and passes. It gates each step on every
+- `durak_follow` plays one seat to the end on its own: `chooseMove()` decides, the loop acts,
+  then waits on `/api/watch` (`your-turn`) for the next decision. Two concurrent calls on two
+  seats finish a whole game, which is how `tests/mcp.mjs` covers it. A no-move state that also
+  produces no new events backs off and gives up after three spins (`reason: 'no-move'`) instead
+  of busy-looping until the deadline. It returns one compact report: outcome, own move count,
+  the last events, and the final snapshot.
+- `chooseMove` policy: beat with the cheapest non-trump card; transfer instead of taking when a
+  transfer card exists and no cheap defense does; dump a non-trump card when the defender has
+  already taken; never feed trumps mid-deck; spend a last trump only when the deck is empty,
+  three rows are unbeaten, or at most one unseen trump remains.
+- `Ledger` reconstructs card accounting from the public journal: it marks cards seen (own hand,
+  trump card, table) and cards dead (a `pass` that cleared a fully beaten table), and records
+  who took a row. Snapshots expose `hidden: { unseen, trumps, out }` and the text report prints
+  `Скрыто N: в колоде K, в чужих руках M · козырей не видел T · вне игры D`. It replays only
+  events above the last applied `seq`, so observing the same snapshot twice is harmless.
+- `durak_hints` lists attackable, defending, transferable, and (under `takePending`) dumpable
+  cards from the same helpers, without a server round trip.
+- `durak_turn` answers one call instead of `durak_state` + `durak_hints`: flags, legal moves,
+  card accounting, and `recommended` with the reason the policy picked it. It is read-only.
+- Tools carry MCP `annotations` (`readOnlyHint` for `state/hints/turn/seats/lobby/status/watch`),
+  so a client can auto-approve the reads. `durak_admin` and `durak_autoplay` are deliberately
+  absent from `.crushrc`'s `permissions allow`, because they move balances and mint accounts.
+- `durak_autoplay` opens 2–6 seats, creates and joins a room, starts, and plays through the same
+  `chooseMove` policy, rotating seats so the turn owner acts first. It gates each step on every
   seat having received `gameSeq >= baseline + steps`; actions broadcast one game event per
   player, so a lagging seat would otherwise act on a stale table. It waits for `account.games`
   before reporting balances. Seats are closed unless `keepSeats` is set.
 - `durak_wait` returns `hit: false` on timeout instead of an error, so an agent can poll events
-  without treating an idle table as a failure. Seats live in the MCP process, so a game survives
-  between chat turns.
-- `.crushrc` lists all eighteen `mcp_durak_*` names in `permissions allow`; without that
-  list Crush prompts for every MCP call. It also raises the MCP call timeout, because
+  without treating an idle table as a failure. Seats live in the MCP process (and on disk), so
+  a game survives between chat turns and across restarts.
+- `.crushrc` lists the read and gameplay `mcp_durak_*` names in `permissions allow`; without
+  that list Crush prompts for every MCP call. It also raises the MCP call timeout, because
   `durak_watch` and `durak_follow` long-poll for minutes.
 - Tool output is a short Russian summary; `structuredContent` carries a compact
-  `snapshot` (room, roles, table as text, hand, counts, flags) instead of the whole game
-  state, and `verbose: true` adds the full JSON. Snapshots in MCP output drop `log`, because
-  `durak_watch` already reports the events that arrived; this keeps per-move responses small
-  enough that a game does not stall on context size. The server is authoritative, so no rules
-  are duplicated beyond hints.
+  `snapshot` (room, roles, table as text, hand, counts, flags, `hidden`) instead of the whole
+  game state, and `verbose: true` adds the full JSON. Snapshots in MCP output drop `log`,
+  because `durak_watch` already reports the events that arrived; this keeps per-move responses
+  small enough that a game does not stall on context size. The server is authoritative: the MCP
+  side only mirrors beat/rank rules to pre-compute hints and the recommended move, and the
+  server still rejects anything illegal.
+
+The Rust adapter `rust/crates/platform-mcp` mirrors the same policy in
+`src/strategy.rs` (`attach_options`, `defense_options`, `transfer_options`, `dump_options`,
+`attack_choices`, `choose_move`, `Ledger`) and exposes the same `durak_turn` tool, so both
+servers make identical decisions and report the same `hidden` counts. Its unit tests cover
+beat order, trump economy, transfer-vs-defense, dumping, and ledger accounting. Keep the two
+implementations in step: change the policy in both, or the Node and Rust agents will disagree
+at the table.
 
 ### Styles (`style.css`)
 
@@ -370,6 +403,9 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
   `DURAK_CLIENT_ID_B`/`DURAK_TOKEN_B` are set to two logged-in club sessions:
   - `tests/engine.mjs` — engine rules, transfer card/capacity checks, leave and offline cleanup.
   - `tests/client.mjs` — client session token generation/storage and transfer UI behavior.
+  - `tests/strategy.mjs` — pure MCP policy: beat/trump rules, attack and dump choices,
+    transfer-vs-defense, trump economy, and `Ledger` card accounting. No server needed.
+  - `tests/mcp-follow.mjs` — `chooseMove` priority for attack/pass/take, also serverless.
   - `tests/security.mjs` — token format/binding, SSE replacement protection, and authenticated
     POSTs.
   - `tests/moves.mjs` — lobby, join by lower-case code, turn order, attack/defend,
@@ -383,10 +419,15 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
     betting table, admin balance top-up pushed over SSE, rename, password change, reset.
   - `tests/full-game.mjs` — simulates a full 2-player game step by step (also checks deck
     conservation), then restarts and asserts 6-card hands and a 24-card deck.
-  - `tests/mcp.mjs` — spawns `mcp/server.mjs` and drives it over stdio: handshake, tool list,
-    two seats (`durak_connect` with `create: true` or club `login`+`password`), create/join/
-    start, state/hints/admin, a `durak_watch` wait on the opponent's move, a full
-    `durak_autoplay` run with generated club accounts, and cleanup.
+  - `tests/mcp.mjs` — spawns `mcp/server.mjs` and drives it over stdio: handshake, tool list
+    with `readOnlyHint` annotations, two seats (`durak_connect` with `create: true` or club
+    `login`+`password`), create/join/start, state/hints/admin, a `durak_watch` wait on the
+    opponent's move, a full `durak_follow` game, a `durak_autoplay` run with generated club
+    accounts, and cleanup. It points `DURAK_MCP_SESSIONS` at a temp dir so a developer's saved
+    seats never leak into the run.
+  - `tests/mcp-sessions.mjs` — seats survive an MCP restart: the file is written on connect with
+    a 64-hex token, the restored seat keeps the same `clientId` and reopens its SSE stream,
+    `durak_turn` and `hints` report card accounting, and disconnect removes the entry.
   - `tests/hooks.mjs` — `/api/watch`: journal and `seq` in snapshots, timeout without
     changes, token/`until` validation, firing on the opponent's action, replay of a missed
     event, and firing on `finished` after the defender leaves.

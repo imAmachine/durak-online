@@ -131,14 +131,15 @@ const adminList = await post('/api/admin', { key: adminKey, op: 'list' });
 check('админ видит игроков', adminList.status === 200 && adminList.data.players.some(player => player.id === a), JSON.stringify(adminList.data).slice(0, 120));
 
 const before = adminList.data.players.find(player => player.id === a);
-const updated = await post('/api/admin', { key: adminKey, op: 'update', id: a, name: 'Анна Клубная', balance: 5000, games: 7, wins: 5, losses: 2 });
-check('админ правит профиль', updated.status === 200 && updated.data.player.balance === 5000 && updated.data.player.name === 'Анна Клубная', JSON.stringify(updated.data));
-await waitFor(() => accountOf(a).name === 'Анна Клубная');
+const clubName = `Анна Клубная ${crypto.randomBytes(3).toString('hex')}`;
+const updated = await post('/api/admin', { key: adminKey, op: 'update', id: a, name: clubName, balance: 5000, games: 7, wins: 5, losses: 2 });
+check('админ правит профиль', updated.status === 200 && updated.data.player.balance === 5000 && updated.data.player.name === clubName, JSON.stringify(updated.data));
+await waitFor(() => accountOf(a).name === clubName);
 check('правка доходит до игрока', accountOf(a).balance === 5000, JSON.stringify(accountOf(a)));
 
 const cheap = await post('/api/admin', { key: adminKey, op: 'update', id: b, balance: 40 });
 check('баланс можно понизить', cheap.status === 200 && cheap.data.player.balance === 40, JSON.stringify(cheap.data));
-const richRoom = await post('/api/rooms', { clientId: a, name: 'Дорогой стол', mode: 'classic', deckSize: 36, bet: 500, playerName: 'Анна Клубная' });
+const richRoom = await post('/api/rooms', { clientId: a, name: 'Дорогой стол', mode: 'classic', deckSize: 36, bet: 500, playerName: clubName });
 check('дорогой стол создан', richRoom.status === 201, JSON.stringify(richRoom.data));
 const poor = await post('/api/join', { clientId: b, roomId: richRoom.data.code, playerName: 'Богдан' });
 check('без баланса не пускают', poor.status === 400, JSON.stringify(poor.data));

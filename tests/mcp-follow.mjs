@@ -1,35 +1,38 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import vm from 'node:vm';
 
-const source = fs.readFileSync(new URL('../mcp/server.mjs', import.meta.url), 'utf8');
-const start = source.indexOf('function myMove(');
-const end = source.indexOf('\nasync function follow(', start);
-assert.ok(start >= 0 && end > start);
-const context = vm.createContext({
-  MAX_TABLE_CARDS: 6,
-  attachOptions: state => state.hand,
-  pickAttackCard: cards => cards[0],
-  cardText: card => card.id,
-});
-vm.runInContext(source.slice(start, end), context);
+import { chooseMove } from '../mcp/strategy.mjs';
+
+const card = id => ({ id, rank: id.slice(0, -1), suit: id.slice(-1) });
+
 const state = {
-  room: { status: 'playing' },
-  you: { id: 'c' },
+  room: { id: 'R', status: 'playing', deckSize: 36, mode: 'classic', bet: 0 },
+  you: { id: 'c', role: 'attacker', hand: [card('6♥')] },
+  hand: [card('6♥')],
+  players: [
+    { id: 'c', name: 'C', cards: 1, role: 'attacker' },
+    { id: 'a', name: 'A', cards: 6, role: 'idle' },
+    { id: 'b', name: 'B', cards: 6, role: 'defender' },
+  ],
   attackerId: 'a',
   defenderId: 'b',
-  table: [{ attack: { id: '6♠' }, defense: { id: '7♠' } }],
-  hand: [{ id: '6♥' }],
+  trump: '♣',
+  deck: 12,
+  table: [{ attack: card('6♠'), defense: card('7♠') }],
   canAttack: true,
   canPass: true,
+  canDefend: false,
+  canTake: false,
+  canTransfer: false,
   takePending: false,
+  finished: null,
+  log: [],
 };
-context.game = state;
-assert.equal(vm.runInContext('myMove(null, game).action', context), 'attack');
-state.canAttack = false;
-assert.equal(vm.runInContext('myMove(null, game).action', context), 'pass');
-state.takePending = true;
-assert.equal(vm.runInContext('myMove(null, game).action', context), 'pass');
-state.canPass = false;
-assert.equal(vm.runInContext('myMove(null, game)', context), null);
+
+assert.equal(chooseMove(state).action, 'attack');
+assert.equal(chooseMove({ ...state, canAttack: false }).action, 'pass');
+assert.equal(chooseMove({ ...state, canAttack: false, canPass: false }), null);
+assert.equal(chooseMove({ ...state, takePending: true, canAttack: false, canPass: true }).action, 'pass');
+assert.equal(chooseMove({ ...state, takePending: true, canPass: false, canAttack: false }), null);
+assert.equal(chooseMove(null), null);
+
 console.log('MCP follow: приоритет и pass другого подкидывающего проверены');

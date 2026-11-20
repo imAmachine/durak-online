@@ -18,6 +18,9 @@ mcp add durak \
 # durak_watch держит серверный long-poll /api/watch, а durak_follow играет
 # партию целиком, поэтому таймаут вызова поднят до 300 с: ход соперника
 # приходит без сообщений в чате.
+#
+# mcp_durak_durak_admin и mcp_durak_durak_autoplay намеренно не в списке:
+# они меняют балансы, пароли и создают аккаунты, поэтому подтверждаются в чате.
 permissions allow \
   mcp_durak_durak_connect \
   mcp_durak_durak_disconnect \
@@ -34,6 +37,5 @@ permissions allow \
   mcp_durak_durak_watch \
   mcp_durak_durak_follow \
   mcp_durak_durak_hints \
-  mcp_durak_durak_profile \
-  mcp_durak_durak_admin \
-  mcp_durak_durak_autoplay
+  mcp_durak_durak_turn \
+  mcp_durak_durak_profile
