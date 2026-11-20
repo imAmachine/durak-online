@@ -1,0 +1,207 @@
+.ambient {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.ambient-layer { position: absolute; inset: 0; }
+
+/* each prop drifts across the viewport; the path starts and ends fully offscreen */
+/* props stay fully opaque so closer objects occlude the ones behind them;
+   distance is expressed with blur + brightness instead of alpha */
+.amb-prop {
+  position: absolute;
+  top: var(--y, 0%);
+  left: 0;
+  animation: ambDrift var(--dur, 96s) linear var(--delay, 0s) infinite;
+  will-change: transform;
+}
+
+/* Depth comes from tone, scale and the frost: the distant layer stays sharp so its
+   ranks read, while mid and near props carry the matte blur themselves. */
+.ambient-far .amb-card,
+.ambient-far .amb-chip { filter: brightness(var(--dim, .35)) saturate(.9); }
+
+.ambient-mid .amb-card,
+.ambient-mid .amb-chip { filter: blur(4px) brightness(var(--dim, .46)) saturate(.95); }
+
+.ambient-near .amb-card,
+.ambient-near .amb-chip { filter: blur(6px) brightness(var(--dim, .62)) saturate(.95); }
+
+.amb-card,
+.amb-chip {
+  position: relative;
+  transform-origin: 50% 50%;
+  animation: ambSway var(--sway, 18s) ease-in-out var(--sway-delay, 0s) infinite alternate;
+}
+
+/* cards keep the game geometry at their own size, so hairlines and glyphs stay crisp */
+.amb-card {
+  --card-w: var(--w, 160px);
+  --card-h: calc(var(--w, 160px) * 1.39);
+  --corner-size: calc(var(--w, 160px) * .25);
+  --pip-size: calc(var(--w, 160px) * .17);
+  --ace-size: calc(var(--w, 160px) * .55);
+  --court-size: calc(var(--w, 160px) * .4);
+  width: var(--w, 160px);
+  height: calc(var(--w, 160px) * 1.39);
+}
+
+.ambient .card-face {
+  border-width: calc(var(--card-w) * .009);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, .42), inset 0 0 0 calc(var(--card-w) * .009) rgba(255, 255, 255, .72);
+}
+
+.ambient .card-face::before { border-width: calc(var(--card-w) * .009); }
+
+.ambient .card-court {
+  border-radius: calc(var(--card-w) * .027);
+  box-shadow:
+    inset 0 0 0 calc(var(--card-w) * .018) rgba(255, 253, 247, .85),
+    inset 0 0 0 calc(var(--card-w) * .027) rgba(28, 32, 24, .18);
+}
+
+.amb-card--back {
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(236, 223, 197, .34);
+  border-radius: calc(var(--w, 160px) * .09);
+  color: rgba(233, 200, 143, .7);
+  background:
+    radial-gradient(circle at 50% 50%, rgba(233, 200, 143, .16) 0 26%, transparent 27%),
+    repeating-linear-gradient(45deg, rgba(233, 200, 143, .13) 0 1px, transparent 1px 7px),
+    repeating-linear-gradient(-45deg, rgba(233, 200, 143, .09) 0 1px, transparent 1px 7px),
+    #0f352a;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, .45), inset 0 0 0 1px rgba(255, 255, 255, .05);
+}
+
+.amb-card--back::before {
+  content: '';
+  position: absolute;
+  inset: calc(var(--w, 160px) * .07);
+  border: 1px solid rgba(233, 200, 143, .24);
+  border-radius: calc(var(--w, 160px) * .04);
+}
+
+.amb-card--back i {
+  font: 500 calc(var(--w, 160px) * .3)/1 var(--font-display);
+  font-style: normal;
+  opacity: .85;
+}
+
+/* clay chip: coloured rim with ivory inserts, recessed centre and a suit mark */
+.amb-chip {
+  display: block;
+  width: var(--w, 96px);
+  height: var(--w, 96px);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 26%, rgba(255, 255, 255, .26), transparent 58%),
+    repeating-conic-gradient(from -6deg, rgba(243, 236, 221, .92) 0 9deg, transparent 9deg 45deg),
+    linear-gradient(180deg, rgba(255, 255, 255, .16), rgba(0, 0, 0, .3)),
+    var(--chip-base, var(--brass));
+  box-shadow:
+    inset 0 0 0 2px rgba(0, 0, 0, .34),
+    inset 0 3px 7px rgba(255, 255, 255, .18),
+    0 10px 22px rgba(0, 0, 0, .5);
+}
+
+.amb-chip::before {
+  content: '';
+  position: absolute;
+  inset: 16%;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 32%, rgba(255, 255, 255, .14), transparent 62%),
+    var(--chip-face, #10382a);
+  box-shadow: 0 0 0 1px rgba(243, 236, 221, .28), inset 0 5px 10px rgba(0, 0, 0, .5);
+}
+
+.amb-chip::after {
+  content: '♠';
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--chip-ink, var(--brass-bright));
+  font: 500 30px/1 var(--font-display);
+  opacity: .9;
+}
+
+.amb-chip--red { --chip-base: #a8483d; --chip-face: #143528; --chip-ink: var(--ivory); }
+.amb-chip--green { --chip-base: #2f6b4b; --chip-face: #0f2d21; --chip-ink: var(--brass-bright); }
+
+@keyframes ambDrift {
+  0% { transform: translate3d(calc((var(--w, 160px) + 8vw) * -1), calc(30vh + var(--dy, 0vh)), 0); }
+  34% { transform: translate3d(28vw, calc(8vh + var(--dy, 0vh)), 0); }
+  68% { transform: translate3d(68vw, calc(-12vh + var(--dy, 0vh)), 0); }
+  100% { transform: translate3d(108vw, calc(-32vh + var(--dy, 0vh)), 0); }
+}
+
+@keyframes ambSway {
+  from { transform: translate3d(calc(var(--wobble-x, 20px) * -1), var(--wobble-y, 12px), 0) rotate(var(--tilt, 0deg)); }
+  to { transform: translate3d(var(--wobble-x, 20px), calc(var(--wobble-y, 12px) * -1), 0) rotate(calc(var(--tilt, 0deg) + var(--turn, 8deg))); }
+}
+
+/* The pane is the tone wash behind the props; the frost above them is only tint and grain. */
+.ambient-glass {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(233, 200, 143, .06);
+  background:
+    linear-gradient(180deg, rgba(8, 18, 13, .72), rgba(4, 12, 8, .82)),
+    radial-gradient(120% 80% at 78% -20%, rgba(200, 160, 92, .11), transparent 60%),
+    radial-gradient(90% 70% at 6% 110%, rgba(36, 132, 90, .2), transparent 62%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035), inset 0 0 120px rgba(0, 0, 0, .18);
+}
+
+/* the frost is the matte veil and grain over every prop; the blur lives on mid and near */
+.ambient-frost {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(6, 17, 12, .1), rgba(4, 11, 8, .2));
+}
+
+.ambient-frost::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: .18;
+  mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+  background-size: 200px 200px;
+  pointer-events: none;
+}
+
+/* surface glow that sits over the frosted props */
+.ambient-haze {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(112deg, transparent 32%, rgba(255, 255, 255, .03) 47%, transparent 60%),
+    radial-gradient(140% 100% at 50% 118%, rgba(233, 200, 143, .05), transparent 62%),
+    radial-gradient(130% 95% at 50% 45%, rgba(30, 92, 62, .14), transparent 72%),
+    linear-gradient(180deg, rgba(7, 20, 14, .1), rgba(4, 11, 8, .16));
+}
+
+.ambient-haze::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: .12;
+  mix-blend-mode: overlay;
+  background-image: var(--grain-image);
+  background-size: 150px 150px;
+}
+
+@media (max-width: 760px) {
+  .ambient-far .amb-card,
+  .ambient-far .amb-chip { filter: brightness(var(--dim, .38)) saturate(.9); }
+  .ambient-mid .amb-card,
+  .ambient-mid .amb-chip { filter: blur(2.5px) brightness(var(--dim, .5)) saturate(.95); }
+  .ambient-near .amb-card,
+  .ambient-near .amb-chip { filter: blur(3.5px) brightness(var(--dim, .64)) saturate(.95); }
+}
+.app-shell { display: flex; min-height: 100vh; position: relative; z-index: 1; }

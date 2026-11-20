@@ -1,0 +1,155 @@
+@media (max-width: 1180px) {
+  .hero-copy { max-width: 58%; }
+  .hero-cards { transform: translateY(-50%) scale(.72); }
+}
+
+@media (max-width: 960px) {
+  .sidebar { flex-basis: 236px; width: 236px; padding-inline: 18px; }
+  .hero-banner { align-items: flex-start; min-height: 0; padding: 40px 42px 270px; }
+  .hero-copy { max-width: none; }
+  .hero-cards { top: auto; right: 50%; bottom: -10px; transform: translateX(50%) scale(.62); transform-origin: center; opacity: .55; }
+  .hero-seal { left: -14px; }
+  .hero-footer { gap: 8px 16px; letter-spacing: .14em; }
+  .hero-footer span + span::before { margin-right: 16px; }
+  .rule-card, .rule-card:not(:first-child), .rule-card:last-child { padding: 26px 20px; }
+  .rules-brief { grid-template-columns: 1fr; }
+  .rule-card { border-right: 0; border-bottom: 1px solid var(--line); }
+  .rule-card:last-child { border-bottom: 0; }
+  .rule-card p { max-width: 60ch; }
+  .table { min-height: 620px; }
+  .seat > .mini-avatar { width: min(58px, 85cqw); }
+  .table { --card-w: 62px; }
+  .table-cards { top: 53%; --row-max: 96%; }
+  .pair .card-face.defense { transform: rotate(2deg); }
+  .deck { left: 3.2%; bottom: 16%; }
+  .console-actions { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+  .console-actions .primary-btn,
+  .console-actions .resume-btn { grid-column: 1 / -1; }
+}
+
+@media (max-width: 800px) {
+  .app-shell { display: block; }
+
+  .sidebar {
+    position: sticky;
+    top: 0;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    background: rgba(10, 16, 12, .92);
+    backdrop-filter: blur(14px);
+  }
+
+  .sidebar::after { display: none; }
+
+  .brand { flex: 0 0 auto; gap: 9px; padding: 0; }
+  .brand-mark { width: 36px; height: 36px; border-radius: 9px; font-size: 20px; }
+  .brand > span:last-child { font-size: 17px; }
+  .brand em { display: none; }
+  .sidebar .profile { flex: 0 0 auto; min-height: 0; width: auto; padding: 0; border: 0; background: none; }
+  .sidebar .profile-info, .sidebar .edit-mark { display: none; }
+  .sidebar .avatar { width: 36px; height: 36px; }
+  .nav { flex-direction: row; gap: 0; margin-left: auto; padding: 0; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav-item { width: 44px; min-height: 44px; flex: 0 0 44px; justify-content: center; padding: 0; border-radius: 9px; }
+  .nav-item svg { flex-basis: 19px; width: 19px; height: 19px; }
+  .nav-item span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .nav-item.active::before { left: 8px; right: 8px; top: auto; bottom: 2px; width: auto; height: 2px; }
+  .side-bottom { flex: 0 0 auto; margin: 0; padding: 0; border: 0; }
+  .sidebar-note, .online { display: none; }
+  .main-content { padding: 26px 18px 60px; }
+  .topbar { display: block; }
+  .topbar h1 { font-size: 46px; }
+  .club-masthead { justify-items: start; max-width: none; margin-top: 20px; padding: 14px 0 0; border-top: 1px solid var(--line); border-left: 0; text-align: left; }
+  .masthead-date { display: flex; align-items: baseline; gap: 9px; font-size: 24px; }
+  .masthead-date em { font-size: .8em; }
+  .hero-banner { min-height: 0; margin-top: 26px; padding: 34px 24px 266px; border-radius: 20px; }
+  .hero-copy h2 { font-size: clamp(44px, 12vw, 62px); }
+  .hero-copy p { font-size: 13.5px; }
+  .hero-btn { min-height: 50px; padding: 15px 22px; }
+  .hero-footer { margin-top: 24px; font-size: 8.5px; }
+  .hero-cards { top: auto; right: 50%; bottom: -10px; transform: translateX(50%) scale(.58); opacity: .5; }
+  .hero-cards:hover .c1 { transform: rotate(-17deg); }
+  .hero-cards:hover .c2 { transform: rotate(-6deg); }
+  .hero-cards:hover .c3 { transform: rotate(6deg); }
+  .hero-cards:hover .c4 { transform: rotate(17deg); }
+  .hero-seal { display: none; }
+  .hero-note { top: 0; right: 8px; }
+
+  .ornament { margin-bottom: 32px; }
+  .section-head { display: block; }
+  .lobby-console { margin-top: 18px; padding-top: 16px; gap: 12px; }
+  .filter { width: max-content; }
+  .console-actions { width: 100%; gap: 7px; }
+  .games-grid { grid-template-columns: 1fr; gap: 16px; margin-top: 22px; }
+  .game-card { min-height: 190px; padding: 22px 20px 18px; }
+  .empty-state { flex-direction: column; align-items: flex-start; gap: 18px; padding: 28px 22px; }
+  .empty-state .secondary-btn { width: 100%; }
+  .rules-brief { margin-top: 40px; }
+  .rule-card, .rule-card:not(:first-child), .rule-card:last-child { padding: 24px 0; }
+  .lobby-footer { flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 42px; }
+
+  .game-top { align-items: center; gap: 8px; }
+  .game-top .ghost-btn { padding: 10px 10px; font-size: 10px; }
+  .table-title strong { font-size: 22px; }
+  .table { min-height: 640px; border-radius: 20px; }
+  .table::after { inset: 12px; border-radius: 14px; }
+  .table-emblem span { font-size: 170px; }
+  .deck { left: 3.2%; bottom: 26%; }
+  .table { --card-w: clamp(52px, 7.2vw, 62px); }
+  .table-cards { top: 49%; left: 54%; --row-max: 84%; }
+  .table-message { max-width: 86%; padding: 8px 14px; }
+  .my-hand { bottom: 16px; padding-inline: calc(var(--card-w) * .3); overflow-x: auto; justify-content: flex-start; scrollbar-width: none; }
+  .my-hand::-webkit-scrollbar { display: none; }
+  .hand-slot { flex: 0 0 auto; }
+  .hand-slot:hover .hand-card, .hand-card:focus-visible { transform: translateY(-8px); }
+  .game-actions { gap: 8px; margin-top: 16px; }
+  .game-actions button { min-width: 0; flex: 1 1 44%; }
+  .modal { padding: 34px 22px 28px; max-height: 90vh; }
+  .modal h2 { font-size: 31px; }
+  .modal-grid { grid-template-columns: 1fr; }
+  .modal input, .modal select { font-size: 16px; }
+  .modal-actions { justify-content: stretch; }
+  .modal-actions button { flex: 1 1 auto; min-width: 118px; }
+  .admin-link { flex: 1 0 100%; margin-right: 0; }
+  .finish-card { padding: 34px 24px 28px; }
+}
+
+@media (max-width: 420px) {
+  .brand > span:last-child { display: none; }
+  .sidebar { gap: 6px; padding-inline: 10px; }
+  .nav-item { width: 42px; flex-basis: 42px; }
+  .main-content { padding-inline: 14px; }
+  .topbar h1 { font-size: 42px; }
+  .console-actions .ghost-btn, .console-actions .primary-btn { padding: 10px 10px; font-size: 9.5px; letter-spacing: .03em; }
+  .hero-banner { padding: 30px 20px 252px; }
+  .hero-copy h2 { font-size: 42px; }
+  .hero-footer { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+  .hero-footer span + span::before { display: none; }
+  .hero-cards { bottom: -6px; transform: translateX(50%) scale(.48); opacity: .42; }
+  .game-top .ghost-btn { max-width: 92px; padding: 9px 8px; font-size: 9px; line-height: 1.2; }
+  .table-title small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .table { --card-w: 50px; min-height: 600px; }
+  .pair .card-face.defense { transform: none; }
+  .seats { inset: 16px 12px auto; }
+  .deck { left: 5%; bottom: 8%; }
+  .hand-slot { width: 62px; height: 86px; flex: 0 0 auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+  }
+  .amb-prop { left: var(--rx, 0%); top: var(--ry, 0%); animation: none; }
+  .amb-card, .amb-chip { animation: none; }
+}
+.login-screen[hidden], .app-shell[hidden] { display: none; }

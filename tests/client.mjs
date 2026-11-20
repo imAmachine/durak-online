@@ -2,7 +2,19 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
-const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+const sharedSource = fs.readFileSync(new URL('../js/shared.js', import.meta.url), 'utf8').replace(/export const /g, 'const ').replace(/export function /g, 'function ');
+const cardMarkupSource = fs.readFileSync(new URL('../js/card-markup.js', import.meta.url), 'utf8').replace(/import[^;]+;\n/g, '').replace(/export function /g, 'function ');
+const apiSource = fs.readFileSync(new URL('../js/api.js', import.meta.url), 'utf8').replace(/export (async )?function /g, '$1function ');
+const source = fs.readFileSync(new URL('../js/app-core.js', import.meta.url), 'utf8').replace(/import[^;]+;\n/g, '').replace(/export (async )?function /g, '$1function ');
+const adminSource = fs.readFileSync(new URL('../js/admin.js', import.meta.url), 'utf8')
+  .replace(/import \{ ADMIN_FILTERS, AVATAR_TINTS, esc, chips \} from '\.\/shared\.js';\n/, `const AVATAR_TINTS = ['#dceadf', '#f0dfe2', '#f2e7ca', '#dbe7f1', '#e6e0f1', '#f6e2d6'];
+const ADMIN_FILTERS = [['all', 'Все'], ['temp', 'Клубные'], ['discord', 'Discord'], ['legacy', 'Старые'], ['online', 'Онлайн']];
+function esc(value) { return String(value).replace(/[&<>"']/g, symbol => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[symbol])); }
+function chips(value) { return new Intl.NumberFormat('ru-RU').format(Number(value) || 0); }
+`)
+  .replace(/import \{ createApi \} from '\.\/api\.js';\n/, '')
+  .replace("const api = createApi(() => '');", "const adminRequest = createApi(() => '');")
+  .replace(/\bapi\(/g, 'adminRequest(');
 const storage = new Map();
 const calls = [];
 function loadClient(admin = false) {
@@ -28,12 +40,14 @@ function loadClient(admin = false) {
     localStorage: { getItem: () => null },
     sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
   });
-  return { context, elements, started: vm.runInContext(source, context, { filename: 'app.js' }) };
+  const started = vm.runInContext(`${apiSource}\n${admin ? adminSource.replace(/export (async )?function /g, '$1function ') : `${cardMarkupSource}\n${source}`}\n${admin ? 'startAdmin();' : 'startMain();'}`, context, { filename: admin ? 'js/admin.js' : 'js/app-core.js' });
+  if (!admin) context.api = vm.runInContext('api', context);
+  return { context, elements, started };
 }
 const { context, elements: mainElements, started } = loadClient();
 await started;
 assert.equal(typeof mainElements['#createBtn'].listeners.click, 'function');
-const { elements: adminElements } = loadClient(true);
+const { context: adminContext, elements: adminElements } = loadClient(true);
 assert.equal(adminElements['#adminPanel'].hidden, true);
 assert.match(adminElements['#adminGate'].innerHTML, /id="aKey"/);
 const state = vm.runInContext('state', context);
@@ -181,9 +195,9 @@ const players = [
   { id: 'c', name: 'Вера', online: true },
   { id: 'd', name: 'Денис', kind: 'other' },
 ];
-assert.equal(JSON.stringify(context.countAdminPlayers(players)), '{"all":4,"online":2,"temp":1,"discord":1,"legacy":1}');
-assert.deepEqual(Array.from(context.filterAdminPlayers(players, '', 'all', 'recent'), player => player.id), ['discord:b', 'temp:a', 'c', 'd']);
-assert.deepEqual(Array.from(context.filterAdminPlayers(players, ' TEMP: ', 'online', 'name'), player => player.id), ['temp:a']);
+assert.equal(JSON.stringify(adminContext.countAdminPlayers(players)), '{"all":4,"online":2,"temp":1,"discord":1,"legacy":1}');
+assert.deepEqual(Array.from(adminContext.filterAdminPlayers(players, '', 'all', 'recent'), player => player.id), ['discord:b', 'temp:a', 'c', 'd']);
+assert.deepEqual(Array.from(adminContext.filterAdminPlayers(players, ' TEMP: ', 'online', 'name'), player => player.id), ['temp:a']);
 assert.deepEqual(Array.from(context.opponentSeats({ players, you: players[1] }), player => player.id), ['c', 'd', 'temp:a']);
 const opponent = { id: 'op"1', name: '<Анна>', role: 'defender', cards: 2, connected: true };
 const seatGame = { room: { status: 'playing' }, turnId: opponent.id };
@@ -229,7 +243,8 @@ context.fetch = async (path, options) => {
   return { ok: true, json: async () => ({}) };
 };
 await context.api('/api/action', { clientId: 'discord:12345', action: 'start' });
-await context.adminApi({ op: 'list' });
+adminContext.fetch = context.fetch;
+await adminContext.adminApi({ op: 'list' });
 await context.authRequest('/api/auth/temp/login', { name: 'Тест', password: 'fake' });
 assert.deepEqual(requests, [
   ['/api/action', 'POST', 'application/json', { clientId: 'discord:12345', action: 'start', token: 'a'.repeat(64) }],
@@ -245,11 +260,11 @@ await assert.rejects(context.authRequest('/api/auth/temp/login', {}), /Вход 
 context.fetch = async () => ({ ok: true, json: malformedJSON });
 assert.equal(Object.keys(await context.api('/api/action', {})).length, 0);
 const epoch = new Date(2025, 0, 2, 3, 4).getTime();
-assert.equal(context.clubMoment(epoch), '02.01.2025 03:04');
-assert.equal(context.clubDate(epoch / 1000, true), '02.01.2025 03:04');
-assert.equal(context.clubDate(epoch / 1000), '02.01.2025');
-assert.equal(context.clubDate(-1, true), '');
-assert.equal(context.clubMoment(Infinity), '');
+assert.equal(adminContext.clubMoment(epoch), '02.01.2025 03:04');
+assert.equal(adminContext.clubDate(epoch / 1000, true), '02.01.2025 03:04');
+assert.equal(adminContext.clubDate(epoch / 1000), '02.01.2025');
+assert.equal(adminContext.clubDate(-1, true), '');
+assert.equal(adminContext.clubMoment(Infinity), '');
 assert.deepEqual([1, 2, 5, 11, 22].map(context.cardsWord), ['карта', 'карты', 'карт', 'карт', 'карты']);
 
 let modalHTML;
@@ -265,9 +280,11 @@ assert.match(modalHTML, /class="primary-btn full" id="mCreate"/);
 context.openJoinModal('A"B');
 assert.match(modalHTML, /id="mCode"[^>]+value="A&quot;B"/);
 assert.match(modalHTML, /class="primary-btn full" id="mJoin"/);
-context.openTempAccountForm();
+adminContext.openModal = context.openModal;
+adminContext.crypto = { getRandomValues: values => values.fill(7) };
+adminContext.openTempAccountForm();
 assert.match(modalHTML, /id="tPassword" type="text" minlength="4" maxlength="128" value="[^"]+" autocomplete="new-password"/);
-context.openPasswordReset({ name: 'Тест', kind: 'temp' });
+adminContext.openPasswordReset({ name: 'Тест', kind: 'temp' });
 assert.match(modalHTML, /id="pPassword" type="password" minlength="4" maxlength="128" value="[^"]+" autocomplete="new-password"/);
 const sampleCard = { id: '6"♥', rank: '6', suit: '♥' };
 assert.match(context.cardHTML(sampleCard, 'attack target', true), /^<div data-target-card="6&quot;♥" class="card-face red attack target" data-card-id="6&quot;♥">/);
