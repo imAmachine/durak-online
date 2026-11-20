@@ -193,7 +193,9 @@ fn connect(a: &Value) -> Result<Value, String> {
         .chars()
         .take(20)
         .collect::<String>();
-    let accounts: Value = serde_json::from_str(&env::var("DURAK_DISCORD_ACCOUNTS").unwrap_or_default()).unwrap_or(Value::Null);
+    let accounts: Value =
+        serde_json::from_str(&env::var("DURAK_DISCORD_ACCOUNTS").unwrap_or_default())
+            .unwrap_or(Value::Null);
     let selected = accounts.as_object().and_then(|v| v.get(&label));
     let id = selected.and_then(|v| v["clientId"].as_str()).map(str::to_owned).or_else(|| env::var("DURAK_DISCORD_CLIENT_ID").ok()).filter(|v| !v.trim().is_empty()).ok_or("Укажите DURAK_DISCORD_CLIENT_ID и DURAK_DISCORD_TOKEN или сессию места в DURAK_DISCORD_ACCOUNTS")?;
     let token = selected.and_then(|v| v["token"].as_str()).map(str::to_owned).or_else(|| env::var("DURAK_DISCORD_TOKEN").ok()).filter(|v| !v.trim().is_empty()).ok_or("Укажите DURAK_DISCORD_CLIENT_ID и DURAK_DISCORD_TOKEN или сессию места в DURAK_DISCORD_ACCOUNTS")?;
@@ -272,7 +274,11 @@ fn action(a: &Value, act: &str) -> Result<Value, String> {
     }
     let (label, ledger, st) = {
         let s = seat.lock().unwrap();
-        (s.label.clone(), s.ledger.summary(s.game.as_ref().unwrap_or(&Value::Null)), s.game.clone().unwrap_or(Value::Null))
+        (
+            s.label.clone(),
+            s.ledger.summary(s.game.as_ref().unwrap_or(&Value::Null)),
+            s.game.clone().unwrap_or(Value::Null),
+        )
     };
     let mut snapshot = compact(&st, None);
     snapshot["hidden"] = ledger;
@@ -336,7 +342,10 @@ fn turn(a: &Value) -> Result<Value, String> {
         Some(action) => format!(
             "Рекомендую: {}{} — {}",
             action,
-            recommended["cardId"].as_str().map(|c| format!(" {}", c)).unwrap_or_default(),
+            recommended["cardId"]
+                .as_str()
+                .map(|c| format!(" {}", c))
+                .unwrap_or_default(),
             recommended["reason"].as_str().unwrap_or("")
         ),
         None => "Ход не ваш: ждите через durak_watch (until=your-turn).".into(),
@@ -423,7 +432,10 @@ fn wait_watch_since(
         urlencoding(until),
         timeout
     );
-    let r = client().get(url).send().map_err(|e| e.without_url().to_string())?;
+    let r = client()
+        .get(url)
+        .send()
+        .map_err(|e| e.without_url().to_string())?;
     let status = r.status();
     let v: Value = r.json().map_err(|e| e.to_string())?;
     if !status.is_success() {
@@ -455,16 +467,28 @@ impl Drop for AutoCleanup {
 }
 fn autoplay(a: &Value) -> Result<Value, String> {
     let count = a["seats"].as_u64().unwrap_or(2).clamp(2, 6);
-    let credentials: Value = serde_json::from_str(&env::var("DURAK_DISCORD_ACCOUNTS").unwrap_or_default()).unwrap_or(Value::Null);
-    let accounts = credentials.as_object().ok_or("Для autoplay нужны отдельные сессии auto1...autoN в DURAK_DISCORD_ACCOUNTS")?;
+    let credentials: Value =
+        serde_json::from_str(&env::var("DURAK_DISCORD_ACCOUNTS").unwrap_or_default())
+            .unwrap_or(Value::Null);
+    let accounts = credentials
+        .as_object()
+        .ok_or("Для autoplay нужны отдельные сессии auto1...autoN в DURAK_DISCORD_ACCOUNTS")?;
     let mut ids = std::collections::HashSet::new();
     let mut tokens = std::collections::HashSet::new();
     for i in 1..=count {
-        let account = accounts.get(&format!("auto{}", i)).ok_or("Для autoplay нужны отдельные сессии auto1...autoN в DURAK_DISCORD_ACCOUNTS")?;
+        let account = accounts
+            .get(&format!("auto{}", i))
+            .ok_or("Для autoplay нужны отдельные сессии auto1...autoN в DURAK_DISCORD_ACCOUNTS")?;
         let id = account["clientId"].as_str().unwrap_or("");
         let token = account["token"].as_str().unwrap_or("");
-        if id.trim().is_empty() || token.trim().is_empty() || !ids.insert(id.to_string()) || !tokens.insert(token.to_string()) {
-            return Err("Для autoplay нужны отдельные сессии auto1...autoN в DURAK_DISCORD_ACCOUNTS".into());
+        if id.trim().is_empty()
+            || token.trim().is_empty()
+            || !ids.insert(id.to_string())
+            || !tokens.insert(token.to_string())
+        {
+            return Err(
+                "Для autoplay нужны отдельные сессии auto1...autoN в DURAK_DISCORD_ACCOUNTS".into(),
+            );
         }
     }
     let max = a["maxSteps"].as_u64().unwrap_or(300).clamp(10, 2000);
@@ -474,7 +498,9 @@ fn autoplay(a: &Value) -> Result<Value, String> {
     };
     for i in 1..=count {
         let label = format!("auto{}", i);
-        if seats().lock().unwrap().contains_key(&label) { return Err("Место autoplay уже открыто".into()); }
+        if seats().lock().unwrap().contains_key(&label) {
+            return Err("Место autoplay уже открыто".into());
+        }
         let name = format!(
             "{} {}",
             a["name"]
@@ -819,7 +845,6 @@ mod tests {
             -32601
         );
     }
-
 }
 
 #[cfg(test)]

@@ -21,7 +21,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     eprintln!("Listening on {}", listener.local_addr()?);
     axum::serve(
         listener,
-        platform_api::router_with_state(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        platform_api::router_with_state(state)
+            .into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .await?;
     Ok(())

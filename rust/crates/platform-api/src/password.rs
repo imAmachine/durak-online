@@ -1,5 +1,5 @@
-use std::{num::NonZeroU32, sync::OnceLock};
 use ring::pbkdf2;
+use std::{num::NonZeroU32, sync::OnceLock};
 
 const ITERATIONS: u32 = 600_000;
 const SALT_LEN: usize = 16;
@@ -52,22 +52,16 @@ pub(crate) fn hash(password: &str) -> String {
     let mut salt = [0u8; SALT_LEN];
     getrandom::getrandom(&mut salt).expect("OS random source unavailable");
     let key = derive(password, &salt, ITERATIONS);
-    format!(
-        "{PREFIX}${ITERATIONS}${}${}",
-        b64(&salt),
-        b64(&key)
-    )
+    format!("{PREFIX}${ITERATIONS}${}${}", b64(&salt), b64(&key))
 }
 
 pub(crate) fn verify(password: &str, stored: &str) -> bool {
     let mut parts = stored.split('$');
     match (parts.next(), parts.next(), parts.next(), parts.next()) {
         (Some(PREFIX), Some(iterations), Some(salt), Some(key)) => {
-            let (Ok(iterations), Some(salt), Some(key)) = (
-                iterations.parse::<u32>(),
-                unb64(salt),
-                unb64(key),
-            ) else {
+            let (Ok(iterations), Some(salt), Some(key)) =
+                (iterations.parse::<u32>(), unb64(salt), unb64(key))
+            else {
                 return false;
             };
             if salt.len() < 8 || key.len() != KEY_LEN || iterations == 0 || iterations > 5_000_000 {
@@ -140,12 +134,24 @@ mod tests {
         assert!(!verify("новый", &stored));
         assert!(needs_upgrade(&stored));
         assert!(!needs_upgrade(&hash("старый")));
-        assert!(needs_upgrade(&format!("{PREFIX}${}${}${}", ITERATIONS / 2, b64(&[1u8; SALT_LEN]), b64(&[2u8; KEY_LEN]))));
+        assert!(needs_upgrade(&format!(
+            "{PREFIX}${}${}${}",
+            ITERATIONS / 2,
+            b64(&[1u8; SALT_LEN]),
+            b64(&[2u8; KEY_LEN])
+        )));
     }
 
     #[test]
     fn malformed_hashes_never_verify() {
-        for stored in ["", "sha256", "sha256$", "pbkdf2_sha256$abc$aa$bb", "pbkdf2_sha256$1000$$", "pbkdf2_sha256$1000$!!$!!"] {
+        for stored in [
+            "",
+            "sha256",
+            "sha256$",
+            "pbkdf2_sha256$abc$aa$bb",
+            "pbkdf2_sha256$1000$$",
+            "pbkdf2_sha256$1000$!!$!!",
+        ] {
             assert!(!verify("что-угодно", stored), "{stored}");
         }
     }

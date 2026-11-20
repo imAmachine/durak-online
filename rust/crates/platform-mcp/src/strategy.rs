@@ -279,7 +279,8 @@ impl Ledger {
                         if let Some(id) = attack["id"].as_str() {
                             self.dead.insert(id.to_string());
                         }
-                        if let Some(id) = defense.and_then(|d| d["id"].as_str().map(str::to_string)) {
+                        if let Some(id) = defense.and_then(|d| d["id"].as_str().map(str::to_string))
+                        {
                             self.dead.insert(id);
                         }
                     }
@@ -383,7 +384,9 @@ fn defend_decision(st: &Value, ledger: Option<&Ledger>) -> Option<Value> {
     } else {
         "младшая некозырная"
     };
-    Some(json!({"action":"defend","cardId":card["id"],"targetCardId":row["attack"]["id"],"reason":reason}))
+    Some(
+        json!({"action":"defend","cardId":card["id"],"targetCardId":row["attack"]["id"],"reason":reason}),
+    )
 }
 
 pub fn choose_move(st: &Value, ledger: Option<&Ledger>) -> Option<Value> {
@@ -401,7 +404,9 @@ pub fn choose_move(st: &Value, ledger: Option<&Ledger>) -> Option<Value> {
         let dumps = dump_options(st);
         if st["canAttack"] == true {
             if let Some(card) = dumps.first() {
-                return Some(json!({"action":"attack","cardId":card["id"],"reason":"догрузка под «беру»"}));
+                return Some(
+                    json!({"action":"attack","cardId":card["id"],"reason":"догрузка под «беру»"}),
+                );
             }
         }
         return if st["canPass"] == true {
@@ -416,12 +421,12 @@ pub fn choose_move(st: &Value, ledger: Option<&Ledger>) -> Option<Value> {
         }
         if st["canTransfer"] == true {
             let transfers = transfer_options(st);
-            let cheap_defense = defense_options(st)
-                .iter()
-                .any(|(_, c)| !is_trump(c, st));
+            let cheap_defense = defense_options(st).iter().any(|(_, c)| !is_trump(c, st));
             if let Some(card) = transfers.first() {
                 if !cheap_defense || unbeaten(st) >= 2 {
-                    return Some(json!({"action":"transfer","cardId":card["id"],"reason":"перевод выгоднее защиты"}));
+                    return Some(
+                        json!({"action":"transfer","cardId":card["id"],"reason":"перевод выгоднее защиты"}),
+                    );
                 }
             }
         }

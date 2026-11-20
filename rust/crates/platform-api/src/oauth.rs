@@ -1,16 +1,20 @@
 use super::{error, AppState};
 use axum::{
     extract::{ConnectInfo, State},
-    Extension,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
+    Extension, Json,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use ring::digest::{digest as ring_digest, SHA256};
 use serde::Deserialize;
 use serde_json::json;
-use ring::digest::{digest as ring_digest, SHA256};
-use std::{collections::HashMap, net::{IpAddr, SocketAddr}, sync::Mutex, time::{Duration, Instant}};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, SocketAddr},
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 const RATE_WINDOW: Duration = Duration::from_secs(300);
 const RATE_LIMIT: usize = 10;
@@ -24,7 +28,10 @@ struct RateLimiter {
 impl RateLimiter {
     fn allow(&mut self, ip: IpAddr, now: Instant) -> bool {
         let ip = match ip {
-            IpAddr::V6(ip) => ip.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(ip)),
+            IpAddr::V6(ip) => ip
+                .to_ipv4_mapped()
+                .map(IpAddr::V4)
+                .unwrap_or(IpAddr::V6(ip)),
             ip => ip,
         };
         self.attempts.retain(|_, attempts| {
@@ -104,7 +111,11 @@ pub(crate) fn random() -> Result<String, Response> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 pub(crate) fn digest(s: &str) -> String {
-    ring_digest(&SHA256, s.as_bytes()).as_ref().iter().map(|b| format!("{b:02x}")).collect()
+    ring_digest(&SHA256, s.as_bytes())
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -147,14 +158,24 @@ mod tests {
     }
 }
 
-pub async fn start(State(state): State<AppState>, peer: Option<Extension<ConnectInfo<SocketAddr>>>) -> Response {
+pub async fn start(
+    State(state): State<AppState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+) -> Response {
     let (Some(config), Some(_)) = (&state.oauth, &state.repository) else {
         return error(StatusCode::SERVICE_UNAVAILABLE, "Discord вход недоступен");
     };
     let Some(Extension(ConnectInfo(peer))) = peer else {
-        return error(StatusCode::SERVICE_UNAVAILABLE, "Адрес подключения недоступен");
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Адрес подключения недоступен",
+        );
     };
-    let allowed = config.rate_limiter.lock().map(|mut limiter| limiter.allow(peer.ip(), Instant::now())).unwrap_or(false);
+    let allowed = config
+        .rate_limiter
+        .lock()
+        .map(|mut limiter| limiter.allow(peer.ip(), Instant::now()))
+        .unwrap_or(false);
     if !allowed {
         return error(StatusCode::TOO_MANY_REQUESTS, "Слишком много запросов");
     }
@@ -287,8 +308,15 @@ pub async fn complete(State(state): State<AppState>, Json(body): Json<Completion
         .take(20)
         .collect::<String>();
     let avatar_url = identity.avatar.as_deref().and_then(|avatar| {
-        if avatar.len() <= 128 && avatar.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')) {
-            Some(format!("https://cdn.discordapp.com/avatars/{}/{avatar}.png", identity.id))
+        if avatar.len() <= 128
+            && avatar
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            Some(format!(
+                "https://cdn.discordapp.com/avatars/{}/{avatar}.png",
+                identity.id
+            ))
         } else {
             None
         }
@@ -308,8 +336,11 @@ pub async fn complete(State(state): State<AppState>, Json(body): Json<Completion
     drop(repository_guard);
     sessions.insert(id.clone(), token.clone());
     if let Some(previous) = state.clients.write().await.remove(&id) {
-        let _ = previous.sender.try_send(Ok(axum::response::sse::Event::default()
-            .data(json!({"type":"revoked","reason":"session_rotated"}).to_string())));
+        let _ = previous
+            .sender
+            .try_send(Ok(axum::response::sse::Event::default().data(
+                json!({"type":"revoked","reason":"session_rotated"}).to_string(),
+            )));
     }
     (
         [(axum::http::header::CACHE_CONTROL, "no-store")],

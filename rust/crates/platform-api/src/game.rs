@@ -76,13 +76,18 @@ pub struct Room {
 async fn auth(state: &AppState, body: &Value) -> Result<String, axum::response::Response> {
     let id = body.get("clientId").and_then(Value::as_str).unwrap_or("");
     let token = body.get("token").and_then(Value::as_str).unwrap_or("");
-    if !is_client_id(id) || !is_token(token) || (id.starts_with("discord:") && state.oauth.is_none()) {
+    if !is_client_id(id)
+        || !is_token(token)
+        || (id.starts_with("discord:") && state.oauth.is_none())
+    {
         return Err(error(StatusCode::FORBIDDEN, "Неверный токен сессии"));
     }
     if let Some(repository) = &state.repository {
         match super::verified_identity(repository, id, &super::oauth::digest(token)).await {
             Ok(true) => {}
-                Ok(false) | Err(()) => return Err(error(StatusCode::FORBIDDEN, "Неверный токен сессии")),
+            Ok(false) | Err(()) => {
+                return Err(error(StatusCode::FORBIDDEN, "Неверный токен сессии"))
+            }
         }
     }
     if state.sessions.read().await.get(id).map(String::as_str) == Some(token) {
@@ -148,7 +153,11 @@ fn card_label(c: Card) -> String {
 fn card_json(c: Card) -> Value {
     json!({"id":format!("{}{}",match c.rank {Rank::Two=>"2",Rank::Three=>"3",Rank::Four=>"4",Rank::Five=>"5",Rank::Six=>"6",Rank::Seven=>"7",Rank::Eight=>"8",Rank::Nine=>"9",Rank::Ten=>"10",Rank::Jack=>"В",Rank::Queen=>"Д",Rank::King=>"К",Rank::Ace=>"Т"},match c.suit {Suit::Spades=>"♠",Suit::Hearts=>"♥",Suit::Diamonds=>"♦",Suit::Clubs=>"♣"}),"rank":match c.rank {Rank::Two=>"2",Rank::Three=>"3",Rank::Four=>"4",Rank::Five=>"5",Rank::Six=>"6",Rank::Seven=>"7",Rank::Eight=>"8",Rank::Nine=>"9",Rank::Ten=>"10",Rank::Jack=>"В",Rank::Queen=>"Д",Rank::King=>"К",Rank::Ace=>"Т"},"suit":match c.suit {Suit::Spades=>"♠",Suit::Hearts=>"♥",Suit::Diamonds=>"♦",Suit::Clubs=>"♣"}})
 }
-fn room_summary(r: &Room, accounts: &HashMap<String, Account>, connected: &HashSet<String>) -> Value {
+fn room_summary(
+    r: &Room,
+    accounts: &HashMap<String, Account>,
+    connected: &HashSet<String>,
+) -> Value {
     json!({"id":r.id,"name":r.name,"mode":if r.mode==Mode::Transfer{"transfer"}else{"classic"},"deckSize":r.deck_size.card_count(),"bet":r.bet,"status":status(r.state.status),"host":accounts.get(&r.host).map(|a|a.name.clone()).unwrap_or_default(),"players":r.state.players.iter().filter(|p| !p.left && connected.contains(&p.id)).map(|p|json!({"id":p.id,"name":accounts.get(&p.id).map(|a|a.name.clone()).unwrap_or_else(||p.id.clone()),"cards":p.hand.len(),"connected":true})).collect::<Vec<_>>(),"seats":6})
 }
 fn status(s: durak_engine::Status) -> &'static str {
@@ -270,12 +279,28 @@ async fn broadcast_lobby(state: &AppState, rooms: &HashMap<String, Room>) {
     let clients = state.clients.read().await;
     let connected: HashSet<String> = clients.keys().cloned().collect();
     let history = if let Some(repository) = &state.repository {
-        repository.lock().await.list_history(8).unwrap_or_default().into_iter().map(|h| json!({"room":h.room,"mode":h.mode,"at":h.at,"loser":h.loser,"bet":h.bet})).collect::<Vec<_>>()
-    } else { Vec::new() };
+        repository
+            .lock()
+            .await
+            .list_history(8)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|h| json!({"room":h.room,"mode":h.mode,"at":h.at,"loser":h.loser,"bet":h.bet}))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let lobby = json!({"type":"lobby","online":clients.len(),"rooms":rooms.values().filter(|r| r.state.status != durak_engine::Status::Finished && r.state.players.iter().any(|p| !p.left && connected.contains(&p.id))).map(|r| room_summary(r, &accounts, &connected)).collect::<Vec<_>>(),"history":history});
     let mut failed = Vec::new();
     for (id, client) in clients.iter() {
-        if client.sender.try_send(Ok(axum::response::sse::Event::default().data(lobby.to_string()))).is_err() && client.sender.is_closed() {
+        if client
+            .sender
+            .try_send(Ok(
+                axum::response::sse::Event::default().data(lobby.to_string())
+            ))
+            .is_err()
+            && client.sender.is_closed()
+        {
             failed.push(id.clone());
         }
     }
@@ -297,39 +322,112 @@ async fn push_account(state: &AppState, id: &str) {
         }
     }
 }
-fn record_room(r: &mut Room, accounts: &HashMap<String, Account>, actor: &str, action: &str, data: &Value) {
+fn record_room(
+    r: &mut Room,
+    accounts: &HashMap<String, Account>,
+    actor: &str,
+    action: &str,
+    data: &Value,
+) {
     r.seq += 1;
     let ev = json!({"seq":r.seq,"at":now(),"action":action,"actorId":if actor.is_empty(){None}else{Some(actor)},"actorName":accounts.get(actor).map(|a|a.name.as_str()).unwrap_or(""),"cardId":data.get("cardId"),"targetCardId":data.get("targetCardId"),"status":status(r.state.status),"turnId":r.state.turn_id,"attackerId":r.state.attacker_id,"defenderId":r.state.defender_id,"message":r.message});
     r.events.push(ev);
-    if r.events.len() > 40 { r.events.remove(0); }
+    if r.events.len() > 40 {
+        r.events.remove(0);
+    }
 }
 
 fn durable_account(a: &Account) -> super::storage::DurableAccount {
-    super::storage::DurableAccount { id: a.id.clone(), name: a.name.clone(), balance: a.balance, games: a.games, wins: a.wins, losses: a.losses, avatar_url: a.avatar_url.clone(), password_hash: a.password_hash.clone(), created_at: a.created_at }
+    super::storage::DurableAccount {
+        id: a.id.clone(),
+        name: a.name.clone(),
+        balance: a.balance,
+        games: a.games,
+        wins: a.wins,
+        losses: a.losses,
+        avatar_url: a.avatar_url.clone(),
+        password_hash: a.password_hash.clone(),
+        created_at: a.created_at,
+    }
 }
 
-async fn commit_room(state: &AppState, r: &mut Room, before: &HashMap<String, Account>, after: &HashMap<String, Account>, actor: &str, action: &str, data: &Value, initial: bool) -> Result<(), ()> {
-    let was_finished = r.events.last().and_then(|event| event.get("status")).and_then(Value::as_str) == Some("finished");
+async fn commit_room(
+    state: &AppState,
+    r: &mut Room,
+    before: &HashMap<String, Account>,
+    after: &HashMap<String, Account>,
+    actor: &str,
+    action: &str,
+    data: &Value,
+    initial: bool,
+) -> Result<(), ()> {
+    let was_finished = r
+        .events
+        .last()
+        .and_then(|event| event.get("status"))
+        .and_then(Value::as_str)
+        == Some("finished");
     record_room(r, after, actor, action, data);
     if let Some(repository) = &state.repository {
-        let seq = i64::try_from(r.seq).map_err(|_| ())?.checked_sub(1).ok_or(())?;
-        if before.keys().any(|id| !after.contains_key(id)) { return Err(()); }
-        let mut changes: Vec<_> = after.iter().filter_map(|(id, new)| {
-            let old = before.get(id);
-            if old == Some(new) { None } else { Some(super::storage::AccountChange { before: old.map(durable_account), after: durable_account(new) }) }
-        }).collect();
+        let seq = i64::try_from(r.seq)
+            .map_err(|_| ())?
+            .checked_sub(1)
+            .ok_or(())?;
+        if before.keys().any(|id| !after.contains_key(id)) {
+            return Err(());
+        }
+        let mut changes: Vec<_> = after
+            .iter()
+            .filter_map(|(id, new)| {
+                let old = before.get(id);
+                if old == Some(new) {
+                    None
+                } else {
+                    Some(super::storage::AccountChange {
+                        before: old.map(durable_account),
+                        after: durable_account(new),
+                    })
+                }
+            })
+            .collect();
         changes.sort_by(|a, b| a.after.id.cmp(&b.after.id));
-        let transition = super::storage::DurableTransition { game_id: r.id.clone(), expected_seq: if initial { None } else { Some(seq - 1) }, seq, state_json: serde_json::to_string(r).map_err(|_| ())?, accounts: changes };
+        let transition = super::storage::DurableTransition {
+            game_id: r.id.clone(),
+            expected_seq: if initial { None } else { Some(seq - 1) },
+            seq,
+            state_json: serde_json::to_string(r).map_err(|_| ())?,
+            accounts: changes,
+        };
         let history = if r.state.status == durak_engine::Status::Finished && !was_finished {
             let finished = r.state.finished.as_ref();
             let loser = match finished {
                 Some(f) if f.draw => "Ничья".to_owned(),
-                Some(f) => f.loser_id.as_deref().and_then(|id| after.get(id).map(|a| a.name.clone())).unwrap_or_else(|| "Неизвестный игрок".into()),
+                Some(f) => f
+                    .loser_id
+                    .as_deref()
+                    .and_then(|id| after.get(id).map(|a| a.name.clone()))
+                    .unwrap_or_else(|| "Неизвестный игрок".into()),
                 None => "Ничья".to_owned(),
             };
-            Some(super::storage::FinishedGameHistory { room: r.name.clone(), mode: if r.mode == Mode::Transfer { "transfer".into() } else { "classic".into() }, at: now() as i64, loser, bet: r.bet })
-        } else { None };
-        repository.lock().await.commit_transition_with_history(&transition, history.as_ref()).map_err(|_| ())?;
+            Some(super::storage::FinishedGameHistory {
+                room: r.name.clone(),
+                mode: if r.mode == Mode::Transfer {
+                    "transfer".into()
+                } else {
+                    "classic".into()
+                },
+                at: now() as i64,
+                loser,
+                bet: r.bet,
+            })
+        } else {
+            None
+        };
+        repository
+            .lock()
+            .await
+            .commit_transition_with_history(&transition, history.as_ref())
+            .map_err(|_| ())?;
     }
     Ok(())
 }
@@ -341,13 +439,20 @@ async fn publish_room(state: &AppState, r: &Room) {
     for p in &r.state.players {
         if !p.left {
             if let Some(c) = clients.get(&p.id) {
-                let _ = c.sender.try_send(Ok(axum::response::sse::Event::default().data(json!({"type":"game","state":snapshot(r,&p.id,&accounts,&connected)}).to_string())));
+                let _ = c
+                    .sender
+                    .try_send(Ok(axum::response::sse::Event::default().data(
+                        json!({"type":"game","state":snapshot(r,&p.id,&accounts,&connected)})
+                            .to_string(),
+                    )));
             }
         }
     }
     drop(clients);
     drop(accounts);
-    if let Some(ev) = r.events.last() { state.event_hub.publish(r.id.clone(), ev.clone()).await; }
+    if let Some(ev) = r.events.last() {
+        state.event_hub.publish(r.id.clone(), ev.clone()).await;
+    }
 }
 
 async fn push_snapshot(state: &AppState, r: &Room, id: &str) {
@@ -355,15 +460,25 @@ async fn push_snapshot(state: &AppState, r: &Room, id: &str) {
     let clients = state.clients.read().await;
     if let Some(c) = clients.get(id) {
         let connected = clients.keys().cloned().collect();
-        let _ = c.sender.try_send(Ok(axum::response::sse::Event::default()
-            .data(json!({"type":"game","state":snapshot(r, id, &accounts, &connected)}).to_string())));
+        let _ = c
+            .sender
+            .try_send(Ok(axum::response::sse::Event::default().data(
+                json!({"type":"game","state":snapshot(r, id, &accounts, &connected)}).to_string(),
+            )));
     }
 }
 
 async fn broadcast(state: &AppState, r: &mut Room, actor: &str, action: &str, data: &Value) {
     let accounts = state.accounts.read().await;
     let mut next = r.clone();
-    if commit_room(state, &mut next, &accounts, &accounts, actor, action, data, false).await.is_err() { return; }
+    if commit_room(
+        state, &mut next, &accounts, &accounts, actor, action, data, false,
+    )
+    .await
+    .is_err()
+    {
+        return;
+    }
     *r = next;
     drop(accounts);
     publish_room(state, r).await;
@@ -416,7 +531,12 @@ pub async fn create(
     let Some(client) = clients.get(&id) else {
         return error(StatusCode::BAD_REQUEST, "Нет соединения с сервером");
     };
-    let requested_name = body.get("playerName").and_then(Value::as_str).map(str::trim).filter(|name| !name.is_empty()).map(|name| name.chars().take(20).collect::<String>());
+    let requested_name = body
+        .get("playerName")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| name.chars().take(20).collect::<String>());
     let current_name = state
         .accounts
         .read()
@@ -447,7 +567,9 @@ pub async fn create(
                 match repository.lock().await.load_transition_state(&code) {
                     Ok(None) => break code,
                     Ok(Some(_)) => continue,
-                    Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно"),
+                    Err(_) => {
+                        return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно")
+                    }
                 }
             } else {
                 break code;
@@ -507,7 +629,19 @@ pub async fn create(
     };
     let connected = state.clients.read().await.keys().cloned().collect();
     let updated_accounts = accounts.clone();
-    if commit_room(&state, &mut r, &original_accounts, &updated_accounts, &id, "create", &body, true).await.is_err() {
+    if commit_room(
+        &state,
+        &mut r,
+        &original_accounts,
+        &updated_accounts,
+        &id,
+        "create",
+        &body,
+        true,
+    )
+    .await
+    .is_err()
+    {
         *accounts = original_accounts;
         return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно");
     }
@@ -578,17 +712,33 @@ pub async fn join(
                 Ok(account) => account,
                 Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно"),
             }
-        } else { None };
+        } else {
+            None
+        };
         if let Some(account) = stored {
             accounts.insert(id.clone(), account.clone());
             next_accounts.insert(id.clone(), account);
         } else {
-            let requested = body.get("playerName").and_then(Value::as_str).map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned);
+            let requested = body
+                .get("playerName")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned);
             let name = match requested {
                 Some(name) => name,
-                None => state.clients.read().await.get(&id).map(|c| c.name.clone()).unwrap_or_else(|| "Игрок".into()),
+                None => state
+                    .clients
+                    .read()
+                    .await
+                    .get(&id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| "Игрок".into()),
             };
-            next_accounts.insert(id.clone(), Account::new(&id, &name.chars().take(20).collect::<String>()));
+            next_accounts.insert(
+                id.clone(),
+                Account::new(&id, &name.chars().take(20).collect::<String>()),
+            );
         }
     }
     if !existing {
@@ -606,7 +756,19 @@ pub async fn join(
     r.message = "Игроки готовы. Создатель лобби может начать игру".into();
     let connected = state.clients.read().await.keys().cloned().collect();
     let out = json!({"room":room_summary(r,&next_accounts,&connected),"account":next_accounts.get(&id).map(|a|a.public(true))});
-    if commit_room(&state, r, &accounts, &next_accounts, &id, "join", &body, false).await.is_err() {
+    if commit_room(
+        &state,
+        r,
+        &accounts,
+        &next_accounts,
+        &id,
+        "join",
+        &body,
+        false,
+    )
+    .await
+    .is_err()
+    {
         return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно");
     }
     *current = next_room;
@@ -622,7 +784,10 @@ fn play(
     id: String,
     action: Action,
 ) -> Result<DurakState, durak_engine::RuleError> {
-    let command = |player: &str, action: Action| Command { player_id: player.to_owned(), action };
+    let command = |player: &str, action: Action| Command {
+        player_id: player.to_owned(),
+        action,
+    };
     match action {
         Action::Attack(_) => {
             if !game.table.is_empty()
@@ -690,11 +855,21 @@ pub async fn action(
             return error(StatusCode::BAD_REQUEST, "Партия уже идёт");
         }
         let connected: HashSet<_> = state.clients.read().await.keys().cloned().collect();
-        let ready: Vec<_> = next_room.state.players.iter().filter(|p| connected.contains(&p.id) && !p.left).map(|p| p.id.clone()).collect();
+        let ready: Vec<_> = next_room
+            .state
+            .players
+            .iter()
+            .filter(|p| connected.contains(&p.id) && !p.left)
+            .map(|p| p.id.clone())
+            .collect();
         if ready.len() < 2 {
             return error(StatusCode::BAD_REQUEST, "Нужно минимум два игрока");
         }
-        if ready.iter().any(|id| next_accounts.get(id).map_or(true, |a| a.balance < next_room.bet)) {
+        if ready.iter().any(|id| {
+            next_accounts
+                .get(id)
+                .map_or(true, |a| a.balance < next_room.bet)
+        }) {
             return error(StatusCode::BAD_REQUEST, "Недостаточно фишек");
         }
         let mut game = DurakState::new(ready.clone(), next_room.mode, next_room.deck_size);
@@ -712,7 +887,10 @@ pub async fn action(
         let c = body.get("cardId").and_then(card);
         let action = match a {
             "attack" => c.map(Action::Attack),
-            "defend" => c.map(|x| Action::Defend { card: x, target: body.get("targetCardId").and_then(card) }),
+            "defend" => c.map(|x| Action::Defend {
+                card: x,
+                target: body.get("targetCardId").and_then(card),
+            }),
             "transfer" => c.map(Action::Transfer),
             "take" => Some(Action::Take),
             "pass" => Some(Action::Pass),
@@ -723,7 +901,9 @@ pub async fn action(
             .and_then(|x| {
                 let throw_in = matches!(x, Action::Attack(_)) && !next_room.state.table.is_empty();
                 if throw_in && next_room.state.take_pending {
-                    next_room.state.passed_attackers.retain(|p| p != &id && p != &next_room.state.turn_id.clone().unwrap_or_default());
+                    next_room.state.passed_attackers.retain(|p| {
+                        p != &id && p != &next_room.state.turn_id.clone().unwrap_or_default()
+                    });
                 }
                 play(next_room.state.clone(), id.clone(), x)
             });
@@ -762,7 +942,11 @@ pub async fn action(
             _ => next_room.message.clone(),
         };
         if next_room.state.status == durak_engine::Status::Finished {
-            let loser = next_room.state.finished.as_ref().and_then(|f| f.loser_id.clone());
+            let loser = next_room
+                .state
+                .finished
+                .as_ref()
+                .and_then(|f| f.loser_id.clone());
             let loser_name = loser
                 .as_ref()
                 .and_then(|loser| next_accounts.get(loser))
@@ -774,7 +958,19 @@ pub async fn action(
             };
         }
     }
-    if commit_room(&state, &mut next_room, &accounts_guard, &next_accounts, &id, a, &body, false).await.is_err() {
+    if commit_room(
+        &state,
+        &mut next_room,
+        &accounts_guard,
+        &next_accounts,
+        &id,
+        a,
+        &body,
+        false,
+    )
+    .await
+    .is_err()
+    {
         return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно");
     }
     *r = next_room;
@@ -787,10 +983,25 @@ pub async fn action(
     broadcast_lobby(&state, &rooms).await;
     (StatusCode::OK, Json(json!({"ok":true}))).into_response()
 }
-async fn leave_inner(state: &AppState, rooms: &mut HashMap<String, Room>, rid: &str, id: &str, cancel_duel: bool) -> Result<(), ()> {
-    let Some(current) = rooms.get_mut(rid) else { return Ok(()) };
+async fn leave_inner(
+    state: &AppState,
+    rooms: &mut HashMap<String, Room>,
+    rid: &str,
+    id: &str,
+    cancel_duel: bool,
+) -> Result<(), ()> {
+    let Some(current) = rooms.get_mut(rid) else {
+        return Ok(());
+    };
     let mut room = current.clone();
-    let Some(index) = room.state.players.iter().position(|p| p.id == id && !p.left) else { return Ok(()) };
+    let Some(index) = room
+        .state
+        .players
+        .iter()
+        .position(|p| p.id == id && !p.left)
+    else {
+        return Ok(());
+    };
     let mut accounts = state.accounts.write().await;
     let original_accounts = accounts.clone();
     let mut next_accounts = accounts.clone();
@@ -798,7 +1009,9 @@ async fn leave_inner(state: &AppState, rooms: &mut HashMap<String, Room>, rid: &
         let active = room.state.players.iter().filter(|p| !p.left).count();
         room.state.players[index].left = true;
         if room.host == id {
-            if let Some(p) = room.state.players.iter().find(|p| !p.left) { room.host = p.id.clone(); }
+            if let Some(p) = room.state.players.iter().find(|p| !p.left) {
+                room.host = p.id.clone();
+            }
         }
         if cancel_duel && active <= 2 {
             for p in &room.state.players {
@@ -813,17 +1026,32 @@ async fn leave_inner(state: &AppState, rooms: &mut HashMap<String, Room>, rid: &
             room.message = "Партия отменена: игрок удалён администратором".into();
         } else if !room.state.players[index].finished {
             room.state.status = durak_engine::Status::Finished;
-            room.state.finished = Some(durak_engine::Finished { loser_id: Some(id.to_owned()), draw: false });
+            room.state.finished = Some(durak_engine::Finished {
+                loser_id: Some(id.to_owned()),
+                draw: false,
+            });
             room.message = "Игрок покинул партию, игра окончена".into();
             settle(&mut next_accounts, &mut room, Some(id.to_owned()));
         }
     } else {
         room.state.players.remove(index);
         if room.host == id {
-            if let Some(p) = room.state.players.first() { room.host = p.id.clone(); }
+            if let Some(p) = room.state.players.first() {
+                room.host = p.id.clone();
+            }
         }
     }
-    commit_room(state, &mut room, &original_accounts, &next_accounts, id, "leave", &json!({}), false).await?;
+    commit_room(
+        state,
+        &mut room,
+        &original_accounts,
+        &next_accounts,
+        id,
+        "leave",
+        &json!({}),
+        false,
+    )
+    .await?;
     *accounts = next_accounts;
     drop(accounts);
     if room.state.players.is_empty() {
@@ -831,7 +1059,9 @@ async fn leave_inner(state: &AppState, rooms: &mut HashMap<String, Room>, rid: &
     } else {
         *current = room;
         publish_room(state, current).await;
-        for p in &current.state.players { push_account(state, &p.id).await; }
+        for p in &current.state.players {
+            push_account(state, &p.id).await;
+        }
     }
     push_account(state, id).await;
     Ok(())
@@ -850,7 +1080,10 @@ pub async fn leave(
         .find(|(_, r)| r.state.players.iter().any(|p| p.id == id && !p.left))
         .map(|(id, _)| id.clone());
     if let Some(rid) = rid {
-        if leave_inner(&state, &mut rooms, &rid, &id, false).await.is_err() {
+        if leave_inner(&state, &mut rooms, &rid, &id, false)
+            .await
+            .is_err()
+        {
             return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно");
         }
     }
@@ -877,32 +1110,63 @@ pub async fn profile(
         Some(_) => return error(StatusCode::BAD_REQUEST, "Имя не может быть пустым"),
         None => {
             let accounts = state.accounts.read().await;
-            let account = accounts.get(&id).cloned().unwrap_or_else(|| Account::new(&id, "Игрок"));
-            return Json(json!({"ok":true,"name":account.name,"account":account.public(true)})).into_response();
+            let account = accounts
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| Account::new(&id, "Игрок"));
+            return Json(json!({"ok":true,"name":account.name,"account":account.public(true)}))
+                .into_response();
         }
     };
     let mut rooms = state.rooms.write().await;
     let mut accounts = state.accounts.write().await;
     let mut next_accounts = accounts.clone();
-    let account = next_accounts.entry(id.clone()).or_insert_with(|| Account::new(&id, "Игрок"));
+    let account = next_accounts
+        .entry(id.clone())
+        .or_insert_with(|| Account::new(&id, "Игрок"));
     account.name = name.chars().take(20).collect();
     let out = json!({"ok":true,"name":account.name,"account":account.public(true)});
-    if let Some(r) = rooms.values_mut().find(|r| r.state.players.iter().any(|p| p.id == id && !p.left)) {
+    if let Some(r) = rooms
+        .values_mut()
+        .find(|r| r.state.players.iter().any(|p| p.id == id && !p.left))
+    {
         let mut next_room = r.clone();
-        if commit_room(&state, &mut next_room, &accounts, &next_accounts, &id, "rename", &body, false).await.is_err() {
+        if commit_room(
+            &state,
+            &mut next_room,
+            &accounts,
+            &next_accounts,
+            &id,
+            "rename",
+            &body,
+            false,
+        )
+        .await
+        .is_err()
+        {
             return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно");
         }
         *r = next_room;
     } else if let Some(repository) = &state.repository {
-        if repository.lock().await.save_account(next_accounts.get(&id).unwrap()).is_err() {
+        if repository
+            .lock()
+            .await
+            .save_account(next_accounts.get(&id).unwrap())
+            .is_err()
+        {
             return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно");
         }
     }
     *accounts = next_accounts;
     drop(accounts);
-    if let Some(c) = state.clients.write().await.get_mut(&id) { c.name = name.chars().take(20).collect(); }
+    if let Some(c) = state.clients.write().await.get_mut(&id) {
+        c.name = name.chars().take(20).collect();
+    }
     push_account(&state, &id).await;
-    if let Some(r) = rooms.values().find(|r| r.state.players.iter().any(|p| p.id == id && !p.left)) {
+    if let Some(r) = rooms
+        .values()
+        .find(|r| r.state.players.iter().any(|p| p.id == id && !p.left))
+    {
         publish_room(&state, r).await;
     }
     broadcast_lobby(&state, &rooms).await;
@@ -919,13 +1183,24 @@ pub async fn player_profile(
     let Some(room_id) = body.get("roomId").and_then(Value::as_str) else {
         return error(StatusCode::BAD_REQUEST, "Нужен код стола");
     };
-    let Some(player_id) = body.get("playerId").and_then(Value::as_str).filter(|id| is_client_id(id)) else {
+    let Some(player_id) = body
+        .get("playerId")
+        .and_then(Value::as_str)
+        .filter(|id| is_client_id(id))
+    else {
         return error(StatusCode::BAD_REQUEST, "Нужен идентификатор игрока");
     };
     let rooms = state.rooms.read().await;
     let can_view = rooms.get(room_id).is_some_and(|room| {
-        room.state.players.iter().any(|player| player.id == id && !player.left)
-            && room.state.players.iter().any(|player| player.id == player_id)
+        room.state
+            .players
+            .iter()
+            .any(|player| player.id == id && !player.left)
+            && room
+                .state
+                .players
+                .iter()
+                .any(|player| player.id == player_id)
     });
     if !can_view {
         return error(StatusCode::NOT_FOUND, "Игрок за этим столом не найден");
@@ -939,7 +1214,8 @@ pub async fn player_profile(
         "games": account.games,
         "wins": account.wins,
         "losses": account.losses,
-    })).into_response()
+    }))
+    .into_response()
 }
 pub async fn watch(
     State(state): State<AppState>,
@@ -1042,10 +1318,19 @@ pub async fn admin(
         return Json(json!({"ok":true,"players":accounts.values().map(|a|admin_view(a, clients.contains_key(&a.id))).collect::<Vec<_>>()})).into_response();
     };
     if op == "create_temp" {
-        let name = body.get("name").and_then(Value::as_str).unwrap_or("").trim();
+        let name = body
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
         let password = match body.get("password").and_then(Value::as_str) {
             Some(password) if super::password::is_valid(password) => password.to_owned(),
-            Some(_) => return error(StatusCode::BAD_REQUEST, "Пароль должен содержать от 4 до 128 символов"),
+            Some(_) => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "Пароль должен содержать от 4 до 128 символов",
+                )
+            }
             None => match super::oauth::random() {
                 Ok(password) => password,
                 Err(response) => return response,
@@ -1055,14 +1340,25 @@ pub async fn admin(
             return error(StatusCode::BAD_REQUEST, "Укажите имя до 20 символов");
         }
         let mut accounts = state.accounts.write().await;
-        if accounts.values().any(|account| account.name.eq_ignore_ascii_case(name)) {
+        if accounts
+            .values()
+            .any(|account| account.name.eq_ignore_ascii_case(name))
+        {
             return error(StatusCode::CONFLICT, "Такое имя уже занято");
         }
-        let id = match super::oauth::random() { Ok(value) => format!("temp:{value}"), Err(response) => return response };
+        let id = match super::oauth::random() {
+            Ok(value) => format!("temp:{value}"),
+            Err(response) => return response,
+        };
         let mut account = Account::new(&id, name);
         account.password_hash = Some(super::password::hash(&password));
         if let Some(repository) = &state.repository {
-            if repository.lock().await.insert_temp_account(&account, "pending").is_err() {
+            if repository
+                .lock()
+                .await
+                .insert_temp_account(&account, "pending")
+                .is_err()
+            {
                 return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно");
             }
         }
@@ -1080,14 +1376,23 @@ pub async fn admin(
     };
     if op == "delete" {
         drop(accounts);
-        let room_ids: Vec<String> = state.rooms.read().await.iter().filter_map(|(rid, room)| {
-            (room.state.status == durak_engine::Status::Playing
-                && room.state.players.iter().any(|p| p.id == id && !p.left))
+        let room_ids: Vec<String> = state
+            .rooms
+            .read()
+            .await
+            .iter()
+            .filter_map(|(rid, room)| {
+                (room.state.status == durak_engine::Status::Playing
+                    && room.state.players.iter().any(|p| p.id == id && !p.left))
                 .then_some(rid.clone())
-        }).collect();
+            })
+            .collect();
         let mut rooms = state.rooms.write().await;
         for rid in room_ids {
-            if leave_inner(&state, &mut rooms, &rid, id, true).await.is_err() {
+            if leave_inner(&state, &mut rooms, &rid, id, true)
+                .await
+                .is_err()
+            {
                 return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно");
             }
         }
@@ -1105,7 +1410,9 @@ pub async fn admin(
     };
     let mut candidates: Vec<Account> = accounts
         .values()
-        .filter(|account| super::password::is_temporary(&account.id) && account.password_hash.is_some())
+        .filter(|account| {
+            super::password::is_temporary(&account.id) && account.password_hash.is_some()
+        })
         .cloned()
         .collect();
     candidates.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1132,17 +1439,26 @@ pub async fn admin(
                 if name.is_empty() {
                     return error(StatusCode::BAD_REQUEST, "Имя не может быть пустым");
                 };
-                if accounts.values().any(|other| other.id != id && other.name.eq_ignore_ascii_case(name)) {
+                if accounts
+                    .values()
+                    .any(|other| other.id != id && other.name.eq_ignore_ascii_case(name))
+                {
                     return error(StatusCode::CONFLICT, "Такое имя уже занято");
                 }
                 a.name = name.chars().take(20).collect();
             }
             if let Some(password) = body.get("password").and_then(Value::as_str) {
                 if !super::password::is_temporary(&a.id) {
-                    return error(StatusCode::BAD_REQUEST, "Пароль можно менять только у временной учётки");
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "Пароль можно менять только у временной учётки",
+                    );
                 }
                 if !super::password::is_valid(password) {
-                    return error(StatusCode::BAD_REQUEST, "Пароль должен содержать от 4 до 128 символов");
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "Пароль должен содержать от 4 до 128 символов",
+                    );
                 }
                 a.password_hash = Some(super::password::hash(password));
                 revoke_session = true;
@@ -1164,7 +1480,13 @@ pub async fn admin(
         if repository.lock().await.save_account(a).is_err() {
             return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно");
         }
-        if revoke_session && repository.lock().await.replace_password(id, a.password_hash.as_deref().unwrap_or_default(), true).is_err() {
+        if revoke_session
+            && repository
+                .lock()
+                .await
+                .replace_password(id, a.password_hash.as_deref().unwrap_or_default(), true)
+                .is_err()
+        {
             return error(StatusCode::SERVICE_UNAVAILABLE, "Хранилище недоступно");
         }
     }
@@ -1189,14 +1511,25 @@ async fn kick_client(state: &AppState, id: &str) {
 fn admin_view(a: &Account, online: bool) -> Value {
     let mut view = a.public(online);
     if let Some(fields) = view.as_object_mut() {
-        fields.insert("kind".into(), json!(if super::password::is_temporary(&a.id) { "temp" } else if super::password::is_discord(&a.id) { "discord" } else { "legacy" }));
+        fields.insert(
+            "kind".into(),
+            json!(if super::password::is_temporary(&a.id) {
+                "temp"
+            } else if super::password::is_discord(&a.id) {
+                "discord"
+            } else {
+                "legacy"
+            }),
+        );
         fields.insert("hasPassword".into(), json!(a.password_hash.is_some()));
         fields.insert("createdAt".into(), json!(a.created_at));
     }
     view
 }
 pub fn start_cleanup(state: super::AppState) {
-    if cfg!(test) { return; }
+    if cfg!(test) {
+        return;
+    }
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(30));
         loop {
@@ -1214,19 +1547,32 @@ async fn cleanup_rooms(state: &super::AppState) {
     let mut removed = Vec::new();
     let mut refunds = Vec::new();
     for (id, room) in rooms.iter() {
-        let has_connected = room.state.players.iter().any(|p| !p.left && connected.contains(&p.id));
+        let has_connected = room
+            .state
+            .players
+            .iter()
+            .any(|p| !p.left && connected.contains(&p.id));
         if has_connected {
             offline.remove(id);
             continue;
         }
         let since = *offline.entry(id.clone()).or_insert(now);
         let stale = match room.state.status {
-            durak_engine::Status::Playing | durak_engine::Status::Waiting => now.saturating_sub(since) >= 5 * 60 * 1000,
+            durak_engine::Status::Playing | durak_engine::Status::Waiting => {
+                now.saturating_sub(since) >= 5 * 60 * 1000
+            }
             durak_engine::Status::Finished => now.saturating_sub(since) >= 30 * 60 * 1000,
         };
         if stale {
             if room.state.status == durak_engine::Status::Playing && room.pot > 0 {
-                refunds.push((room.pot, room.state.players.iter().map(|p| p.id.clone()).collect::<Vec<_>>()));
+                refunds.push((
+                    room.pot,
+                    room.state
+                        .players
+                        .iter()
+                        .map(|p| p.id.clone())
+                        .collect::<Vec<_>>(),
+                ));
             }
             removed.push(id.clone());
         }
@@ -1240,7 +1586,9 @@ async fn cleanup_rooms(state: &super::AppState) {
     if !refunds.is_empty() {
         let mut accounts = state.accounts.write().await;
         for (pot, players) in refunds {
-            if players.is_empty() { continue; }
+            if players.is_empty() {
+                continue;
+            }
             let share = pot / players.len() as i64;
             let remainder = pot % players.len() as i64;
             for (index, id) in players.into_iter().enumerate() {
@@ -1255,7 +1603,9 @@ async fn cleanup_rooms(state: &super::AppState) {
     }
     if let Some(repository) = &state.repository {
         let mut repository = repository.lock().await;
-        for id in removed { let _ = repository.delete_transition(&id); }
+        for id in removed {
+            let _ = repository.delete_transition(&id);
+        }
     }
     if !connected.is_empty() {
         let rooms = state.rooms.read().await.clone();
@@ -1300,9 +1650,26 @@ mod tests {
     #[test]
     fn room_roundtrip_preserves_private_game_state() {
         use super::*;
-        let mut game = DurakState::new(vec!["a".into(), "b".into()], Mode::Classic, DeckSize::ThirtySix);
+        let mut game = DurakState::new(
+            vec!["a".into(), "b".into()],
+            Mode::Classic,
+            DeckSize::ThirtySix,
+        );
         game.start(&mut durak_engine::Lcg(42)).unwrap();
-        let room = Room { id: "ABCDEF".into(), name: "test".into(), mode: Mode::Classic, deck_size: DeckSize::ThirtySix, bet: 50, host: "a".into(), state: game.clone(), seq: 7, events: vec![], pot: 100, payouts: HashMap::new(), message: "playing".into() };
+        let room = Room {
+            id: "ABCDEF".into(),
+            name: "test".into(),
+            mode: Mode::Classic,
+            deck_size: DeckSize::ThirtySix,
+            bet: 50,
+            host: "a".into(),
+            state: game.clone(),
+            seq: 7,
+            events: vec![],
+            pot: 100,
+            payouts: HashMap::new(),
+            message: "playing".into(),
+        };
         let encoded = serde_json::to_string(&room).unwrap();
         let restored: Room = serde_json::from_str(&encoded).unwrap();
         assert_eq!(restored.state, game);
@@ -1320,7 +1687,12 @@ mod tests {
         game.start(&mut durak_engine::Lcg(5)).unwrap();
         let attacker = game.attacker_id.clone().unwrap();
         assert!(game.table.is_empty());
-        assert!(game.apply(Command { player_id: attacker, action: Action::Take }).is_err());
+        assert!(game
+            .apply(Command {
+                player_id: attacker,
+                action: Action::Take
+            })
+            .is_err());
     }
     #[test]
     fn card_roundtrip_and_reject_invalid() {
@@ -1482,7 +1854,10 @@ mod tests {
         ];
         let a = snapshot(&r, "a", &accounts, &connected);
         assert_eq!(a["canAttack"], false);
-        assert_eq!(a["canPass"], true, "атакующий с пустой рукой обязан закрыть кон");
+        assert_eq!(
+            a["canPass"], true,
+            "атакующий с пустой рукой обязан закрыть кон"
+        );
         assert_eq!(a["you"]["turn"], true);
         r.state.players[0].hand = vec![six_heart];
         r.state.table = vec![TableRow {
@@ -1504,16 +1879,30 @@ mod tests {
         std::env::set_var("ADMIN_KEY", "panel-secret");
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("created.sqlite");
-        let migrations = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
-        let state = AppState::with_repository(super::super::storage::Repository::open(&path, &migrations).unwrap()).unwrap();
+        let migrations =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let state = AppState::with_repository(
+            super::super::storage::Repository::open(&path, &migrations).unwrap(),
+        )
+        .unwrap();
         let before = i64::try_from(now() / 1000).unwrap();
         let created = admin(State(state.clone()), Json(json!({"key":"panel-secret","op":"create_temp","name":"Клуб","password":"пароль-клуба"}))).await;
-        let body = axum::body::to_bytes(created.into_body(), 1024 * 1024).await.unwrap();
+        let body = axum::body::to_bytes(created.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
         let body: Value = serde_json::from_slice(&body).unwrap();
         let id = body["account"]["id"].as_str().unwrap().to_owned();
         let created_at = body["account"]["createdAt"].as_i64().unwrap();
         assert!(created_at >= before);
-        let stored = state.repository.as_ref().unwrap().lock().await.load_account(&id).unwrap().unwrap();
+        let stored = state
+            .repository
+            .as_ref()
+            .unwrap()
+            .lock()
+            .await
+            .load_account(&id)
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.created_at, Some(created_at));
         let listed = admin_view(&state.accounts.read().await[&id], false);
         assert_eq!(listed["createdAt"], json!(created_at));
