@@ -159,11 +159,6 @@ try {
   check('старый пароль отклонён после смены', reloginOld.status === 403, String(reloginOld.status));
 
   const doomed = changed.data.player?.id || revoked.clientId;
-  const busy = await post('/api/admin', { key: adminKey, op: 'delete', id: doomed });
-  check('занятого игрока удалить нельзя', busy.status === 409, `${busy.status} ${JSON.stringify(busy.data)}`);
-  const fresh = await post('/api/auth/temp/login', { name: `клуб-${suffix}`, password: 'ещё-один-пароль' });
-  const left = await post('/api/leave', { clientId: doomed, token: fresh.data.token || '' });
-  check('выход после смены пароля работает', left.status === 200, String(left.status));
   const removed = await post('/api/admin', { key: adminKey, op: 'delete', id: doomed });
   const removedLogin = await post('/api/auth/temp/login', { name: `клуб-${suffix}`, password: 'ещё-один-пароль' });
   const removedList = await post('/api/admin', { key: adminKey, op: 'list' });

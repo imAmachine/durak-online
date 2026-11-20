@@ -225,12 +225,10 @@ is Manrope, both loaded from Google Fonts with Georgia/system fallbacks. Respons
 layouts and `prefers-reduced-motion` rules live near the end of the stylesheet.
 
 The hero banner and playing table use the fixed `--felt-ink` / `--felt-brass` tokens.
-Table geometry is hand-tuned: seats are placed by
-`.pos-1`…`.pos-5`, the deck sits on the left at `bottom: 30%` (raised toward the vertical
-center, below the card row), and table cards form one nowrap row.
-Keep seats, deck, cards, message, and hand non-overlapping; the layout is verified from
-320px to 1600px, including the 961–1180px range where seats shrink via their own breakpoint
-and five opponents plus six pairs are the tightest case. On narrow screens the hero card fan
+Opponent seats form one centered row along the top of the table. Each fan scales to its
+seat width, and deal animations use the actual card positions. The deck sits on the left,
+and table cards form one nowrap row. Check narrow screens with five opponents for fan
+clipping and deck overlap. On narrow screens the hero card fan
 moves into a bottom band, which relies on the extra bottom padding on `.hero-banner` (it is
 sized so the fan and its `.hero-note` badge never cover the hero footer). The fan follows the
 table's corner convention, a rank with the suit centered under it and the pair mirrored in
