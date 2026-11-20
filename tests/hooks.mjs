@@ -1,4 +1,4 @@
-import { registerClubAccounts, referenceIds } from './helpers/accounts.mjs';
+import { registerClubAccounts } from './helpers/accounts.mjs';
 const base = process.env.BASE_URL || 'http://localhost:4173';
 const players = {};
 let failures = 0;
@@ -85,8 +85,9 @@ function watch(id, { since, until = 'any', timeout = 3000, token } = {}) {
   return fetch(url).then(async response => ({ status: response.status, data: await response.json().catch(() => ({})) }));
 }
 
-const labels = await registerClubAccounts(['a', 'b']);
+const { credentials: labels, cleanup } = await registerClubAccounts(['a', 'b']);
 const tokens = new Map(labels.map(item => [item.clientId, item.token]));
+try {
 const a = labels[0].clientId, b = labels[1].clientId;
 
 try {
@@ -164,6 +165,16 @@ try {
 
 if (failures) {
   console.log(`\n${failures} проверок не прошло`);
-  process.exit(1);
+  process.exitCode = 1;
 }
-console.log('hooks: все проверки прошли');
+if (!failures) console.log('hooks: все проверки прошли');
+} finally {
+  for (const player of Object.values(players)) {
+    player.source?.destroy();
+    player.req?.destroy();
+  }
+  try { await cleanup(); } catch (error) {
+    console.log(`FAIL очистка тестовых аккаунтов: ${error.message}`);
+    process.exitCode = 1;
+  }
+}

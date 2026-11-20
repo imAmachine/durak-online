@@ -1,6 +1,5 @@
-import { registerClubAccounts, referenceIds } from './helpers/accounts.mjs';
+import { registerClubAccounts } from './helpers/accounts.mjs';
 import http from 'node:http';
-import crypto from 'node:crypto';
 const base = process.env.BASE_URL || 'http://localhost:4173';
 function tokenFor(id) {
   return tokens.get(id) || '';
@@ -36,8 +35,9 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 const RANKS = ['6','7','8','9','10','В','Д','К','Т'];
 const canBeat = (attack, defense, trump) => attack.suit === defense.suit ? RANKS.indexOf(defense.rank) > RANKS.indexOf(attack.rank) : defense.suit === trump && attack.suit !== trump;
 
-const labels = await registerClubAccounts(['a', 'b']);
+const { credentials: labels, cleanup } = await registerClubAccounts(['a', 'b']);
 const tokens = new Map(labels.map(item => [item.clientId, item.token]));
+try {
 const a = labels[0].clientId, b = labels[1].clientId;
 await connect(a); await connect(b);
 
@@ -129,4 +129,15 @@ check('сценарий «беру» и подкидывание найден', 
 
 players[a].req.destroy(); players[b].req.destroy();
 console.log(failures ? `\n${failures} проверок провалено` : '\nвсе проверки пройдены');
-process.exit(failures ? 1 : 0);
+process.exitCode = failures ? 1 : 0;
+
+} finally {
+  for (const player of Object.values(players)) {
+    player.source?.destroy();
+    player.req?.destroy();
+  }
+  try { await cleanup(); } catch (error) {
+    console.log(`FAIL очистка тестовых аккаунтов: ${error.message}`);
+    process.exitCode = 1;
+  }
+}

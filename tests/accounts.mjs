@@ -1,9 +1,11 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
+import { adminKey, base, testBackend } from './helpers/accounts.mjs';
 
-const base = process.env.BASE_URL || 'http://localhost:4173';
-const adminKey = process.env.ADMIN_KEY || 'test-only-secret';
 let failures = 0;
+const createdIds = new Set();
+const sessionsForCleanup = new Map();
+const passwordsForCleanup = new Map();
 
 function check(label, condition, extra = '') {
   console.log(`${condition ? 'ok  ' : 'FAIL'} ${label}${condition || !extra ? '' : ` ${extra}`}`);
@@ -12,7 +14,19 @@ function check(label, condition, extra = '') {
 
 async function post(path, body) {
   const response = await fetch(base + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  return { status: response.status, data: await response.json().catch(() => ({})) };
+  const data = await response.json().catch(() => ({}));
+  if (path === '/api/admin' && body.op === 'create_temp' && response.status === 200 && data.account?.id) {
+    createdIds.add(data.account.id);
+    passwordsForCleanup.set(data.account.id, { name: data.account.name, password: body.password || data.account.password });
+  }
+  if (path === '/api/admin' && body.op === 'update' && response.status === 200 && passwordsForCleanup.has(body.id)) {
+    const credentials = passwordsForCleanup.get(body.id);
+    if (body.name) credentials.name = body.name;
+    if (body.password) credentials.password = body.password;
+  }
+  if (path === '/api/admin' && body.op === 'delete' && response.status === 200) createdIds.delete(body.id);
+  if (path === '/api/auth/temp/login' && response.status === 200 && data.clientId && data.token) sessionsForCleanup.set(data.clientId, data.token);
+  return { status: response.status, data };
 }
 
 function status() {
@@ -70,11 +84,7 @@ const names = [`гейт-a-${suffix}`, `гейт-b-${suffix}`];
 const passwords = names.map(name => `пароль-${name}`);
 const streams = [];
 
-const probe = await post('/api/admin', { key: adminKey, op: 'create_temp', name: `probe-${suffix}`, password: 'probe-pass' });
-if (/Игрок не найден|Неизвестная операция/.test(String(probe.data.error || ''))) {
-  console.log('club: временный вход и панель проверяются на Rust-сервере, эта сборка их не поддерживает');
-  process.exit(0);
-}
+await testBackend();
 
 try {
   const page = await fetch(`${base}/admin.html`);
@@ -88,7 +98,7 @@ try {
   const accounts = [];
   for (const [index, name] of names.entries()) {
     const created = await post('/api/admin', { key: adminKey, op: 'create_temp', name, password: passwords[index] });
-    check(`аккаунт ${name} создан`, created.status === 200 && created.data.account?.name === name, JSON.stringify(created.data));
+    check(`аккаунт ${name} создан`, created.status === 200 && created.data.account?.name === name, `HTTP ${created.status}`);
     accounts.push(created.data.account || {});
   }
   const duplicate = await post('/api/admin', { key: adminKey, op: 'create_temp', name: names[0], password: 'другой-пароль' });
@@ -104,7 +114,7 @@ try {
   for (const [index, name] of names.entries()) {
     const login = await post('/api/auth/temp/login', { name, password: passwords[index] });
     const valid = login.status === 200 && /^temp:[A-Za-z0-9_-]+$/.test(login.data.clientId || '') && /^[a-f0-9]{64}$/.test(login.data.token || '');
-    check(`вход ${name}`, valid, JSON.stringify(login.data).slice(0, 120));
+    check(`вход ${name}`, valid, `HTTP ${login.status}`);
     sessions.push(login.data);
   }
 
@@ -119,28 +129,28 @@ try {
   const owner = sessions[0];
   const token = session => ({ token: session.token });
   const room = await post('/api/rooms', { clientId: owner.clientId, ...token(owner), name: 'Стол клуба', mode: 'classic', deckSize: 36, bet: 50 });
-  check('стол со ставкой создан', room.status === 201 && room.data.room?.bet === 50, JSON.stringify(room.data).slice(0, 160));
+  check('стол со ставкой создан', room.status === 201 && room.data.room?.bet === 50, String(room.status));
   const joined = await post('/api/join', { clientId: sessions[1].clientId, ...token(sessions[1]), roomId: room.data.code });
-  check('второй игрок вошёл', joined.status === 200, JSON.stringify(joined.data).slice(0, 160));
+  check('второй игрок вошёл', joined.status === 200, String(joined.status));
   const started = await post('/api/action', { clientId: owner.clientId, ...token(owner), action: 'start' });
-  check('партия началась, ставки списаны', started.status === 200, JSON.stringify(started.data).slice(0, 160));
+  check('партия началась, ставки списаны', started.status === 200, String(started.status));
 
   await waitFor(() => streams2[0].lobby > 1);
   const list = await post('/api/admin', { key: adminKey, op: 'list' });
   const player = (list.data.players || []).find(item => item.id === owner.clientId);
-  check('панель видит стол игрока', list.status === 200 && player && player.balance === 950, JSON.stringify(player || list.data).slice(0, 160));
+  check('панель видит стол игрока', list.status === 200 && player && player.balance === 950, String(list.status));
 
   const funded = await post('/api/admin', { key: adminKey, op: 'balance', id: owner.clientId, delta: 500 });
-  check('пополнение баланса', funded.status === 200 && funded.data.player.balance === 1450, JSON.stringify(funded.data).slice(0, 160));
+  check('пополнение баланса', funded.status === 200 && funded.data.player.balance === 1450, String(funded.status));
   await waitFor(() => streams2[0].last && streams2[0].last.type === 'account' && streams2[0].last.account.balance === 1450);
   check('игрок получил новый баланс по SSE', streams2[0].last.account.balance === 1450);
 
   const renamed = await post('/api/admin', { key: adminKey, op: 'update', id: owner.clientId, name: `клуб-${suffix}` });
-  check('переименование из панели', renamed.status === 200 && renamed.data.player.name === `клуб-${suffix}`, JSON.stringify(renamed.data).slice(0, 160));
+  check('переименование из панели', renamed.status === 200 && renamed.data.player.name === `клуб-${suffix}`, String(renamed.status));
   const password = await post('/api/admin', { key: adminKey, op: 'update', id: owner.clientId, password: 'новый-пароль' });
   check('пароль меняется', password.status === 200, String(password.status));
   const relogin = await post('/api/auth/temp/login', { name: 'клуб-' + suffix, password: 'новый-пароль' });
-  check('вход с новым паролем', relogin.status === 200, JSON.stringify(relogin.data).slice(0, 120));
+  check('вход с новым паролем', relogin.status === 200, `HTTP ${relogin.status}`);
 
   const generated = await post('/api/admin', { key: adminKey, op: 'create_temp', name: `авто-${suffix}` });
   const generatedPassword = String(generated.data.account?.password || '');
@@ -152,11 +162,13 @@ try {
 
   const revoked = sessions[0];
   const revokeStream = await sse(revoked.clientId, revoked.token, names[0]);
+  streams.push(revokeStream.request);
   const changed = await post('/api/admin', { key: adminKey, op: 'update', id: revoked.clientId, password: 'ещё-один-пароль' });
   const afterChange = await post('/api/rooms', { clientId: revoked.clientId, token: revoked.token, name: 'Проверка', bet: 0 });
   check('смена пароля закрывает старую сессию', changed.status === 200 && afterChange.status === 403, `${changed.status}/${afterChange.status}`);
   const reloginOld = await post('/api/auth/temp/login', { name: `клуб-${suffix}`, password: 'новый-пароль' });
   check('старый пароль отклонён после смены', reloginOld.status === 403, String(reloginOld.status));
+  await post('/api/auth/temp/login', { name: `клуб-${suffix}`, password: 'ещё-один-пароль' });
 
   const doomed = changed.data.player?.id || revoked.clientId;
   const removed = await post('/api/admin', { key: adminKey, op: 'delete', id: doomed });
@@ -168,24 +180,38 @@ try {
   if (revokeStream.request) revokeStream.request.destroy();
 
   const reset = await post('/api/admin', { key: adminKey, op: 'reset', id: sessions[1].clientId });
-  check('сброс прогресса', reset.status === 200 && reset.data.player.balance === 1000 && reset.data.player.games === 0, JSON.stringify(reset.data).slice(0, 160));
+  check('сброс прогресса', reset.status === 200 && reset.data.player.balance === 1000 && reset.data.player.games === 0, String(reset.status));
 
   const after = await status();
-  check('сервер продолжает отвечать', Array.isArray(after.rooms) && after.online >= before.online - 1, JSON.stringify(after));
+  check('сервер продолжает отвечать', Array.isArray(after.rooms) && after.online >= before.online - 1, String(after.online));
 
-  for (const session of sessions) {
-    await post('/api/leave', { clientId: session.clientId, token: session.token });
-    await post('/api/admin', { key: adminKey, op: 'reset', id: session.clientId });
-  }
-  for (const name of [`авто-${suffix}`, `пусто-${suffix}`]) {
-    const list = await post('/api/admin', { key: adminKey, op: 'list' });
-    const created = (list.data.players || []).find(item => item.name === name);
-    if (created) await post('/api/admin', { key: adminKey, op: 'delete', id: created.id });
-  }
 } catch (error) {
-  check('проверки клуба завершились', false, error.stack || String(error));
+  check('проверки клуба завершились', false, error.message === 'timeout' ? 'таймаут' : 'ошибка запроса или ответа');
 } finally {
+  for (const clientId of createdIds) {
+    try {
+      const credentials = passwordsForCleanup.get(clientId);
+      if (credentials?.name && credentials?.password) {
+        const login = await post('/api/auth/temp/login', credentials);
+        if (login.status !== 200 || login.data.clientId !== clientId || !login.data.token) throw new Error(`вход для очистки: HTTP ${login.status}`);
+      }
+      const token = sessionsForCleanup.get(clientId);
+      if (!token) continue;
+      const result = await post('/api/leave', { clientId, token });
+      if (result.status !== 200 || result.data.ok !== true) throw new Error(`HTTP ${result.status}`);
+    } catch (error) {
+      check('очистка тестового стола', false, error.message);
+    }
+  }
   for (const request of streams) request.destroy();
+  for (const id of [...createdIds]) {
+    try {
+      const result = await post('/api/admin', { key: adminKey, op: 'delete', id });
+      if (result.status !== 200 || result.data.deleted !== id) throw new Error(`HTTP ${result.status}`);
+    } catch (error) {
+      check('очистка тестового аккаунта', false, error.message);
+    }
+  }
 }
 
 console.log(failures ? `\n${failures} проверок провалено` : '\nклубный вход и панель работают');

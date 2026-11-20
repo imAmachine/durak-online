@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     {
         fs::create_dir_all(parent)?;
     }
-    let migrations = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+    let migrations = migrations_dir(env::var_os("DURAK_MIGRATIONS_DIR"));
     let repository = platform_api::storage::Repository::open(&db_path, migrations)?;
     eprintln!("SQLite ready at {}", db_path.display());
 
@@ -26,4 +26,27 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     )
     .await?;
     Ok(())
+}
+
+fn migrations_dir(value: Option<std::ffi::OsString>) -> PathBuf {
+    value
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_directory_override_and_default() {
+        assert_eq!(
+            migrations_dir(Some("custom/migrations".into())),
+            PathBuf::from("custom/migrations")
+        );
+        assert_eq!(
+            migrations_dir(None),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations")
+        );
+    }
 }

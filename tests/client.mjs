@@ -3,22 +3,44 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-function extract(start, end) {
-  return source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
-}
 const storage = new Map();
 const calls = [];
-const context = vm.createContext({
-  Uint8Array,
-  URL,
-  sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) },
-  state: { game: null },
+function loadClient(admin = false) {
+  const elements = Object.fromEntries((admin
+    ? ['#adminGate', '#adminLogin', '#adminPanel', '#aKey', '#aCancel', '#aEnter']
+    : ['#createBtn', '#heroCreateBtn', '#joinRoomBtn', '#historyBtn', '#gameRules', '#cabinetBack', '#myHand',
+      '#mastheadWeekday', '#mastheadDay', '#mastheadTime', '#onlineCount', '#gamesGrid', '#roomCount', '#mastheadNote']
+  ).map(id => [id, { listeners: {}, addEventListener(event, callback) { this.listeners[event] = callback; }, setAttribute() {}, focus() {} }]));
+  if (admin) elements['#adminGate'].querySelector = selector => elements[selector];
+  const context = vm.createContext({
+    URL,
+    URLSearchParams,
+    location: { href: `https://club.test/${admin ? 'admin' : ''}` },
+    document: {
+      body: { dataset: admin ? { admin: 'page' } : {} },
+      addEventListener() {},
+      querySelector: selector => elements[selector] || null,
+      querySelectorAll: () => [],
+    },
+    window: { addEventListener() {} },
+    ResizeObserver: class { observe() {} },
+    setInterval() {},
+    localStorage: { getItem: () => null },
+    sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
+  });
+  return { context, elements, started: vm.runInContext(source, context, { filename: 'app.js' }) };
+}
+const { context, elements: mainElements, started } = loadClient();
+await started;
+assert.equal(typeof mainElements['#createBtn'].listeners.click, 'function');
+const { elements: adminElements } = loadClient(true);
+assert.equal(adminElements['#adminPanel'].hidden, true);
+assert.match(adminElements['#adminGate'].innerHTML, /id="aKey"/);
+const state = vm.runInContext('state', context);
+Object.assign(context, {
   toast: message => calls.push(['toast', message]),
   act: (...args) => calls.push(args),
 });
-vm.runInContext(extract('function readCredentials()', '\nlet credentials'), context);
-vm.runInContext(extract('function isDiscordCallback', '\nfunction inviteCodeFromUrl'), context);
-vm.runInContext(extract('function inviteCodeFromUrl', '\nfunction clearAuthQuery'), context);
 assert.equal(vm.runInContext('readCredentials()', context), null);
 assert.equal(storage.size, 0);
 storage.set('durak.client', 'guest');
@@ -37,7 +59,6 @@ context.history = { replaceState: (a, b, url) => { replaced = url; } };
 context.document = { title: 'Клуб' };
 context.sessionStorage.removeItem = key => storage.delete(key);
 storage.set('durak.discord.invite', 'ABC123');
-vm.runInContext(extract('function clearAuthQuery()', '\nasync function completeDiscordLogin'), context);
 vm.runInContext('clearAuthQuery()', context);
 assert.equal(replaced, '/?code=ABC123');
 assert.equal(storage.has('durak.discord.invite'), false);
@@ -46,7 +67,6 @@ context.setDiscordLoginState = (enabled, message) => { loginMessage = message; }
 context.sessionStorage.getItem = () => { throw new Error('denied'); };
 context.sessionStorage.removeItem = () => { throw new Error('denied'); };
 context.location.href = 'https://club.test/?code=oauth-code&state=oauth-state';
-vm.runInContext(extract('async function completeDiscordLogin()', '\nasync function prepareDiscordLogin'), context);
 assert.equal(await vm.runInContext('completeDiscordLogin()', context), false);
 assert.match(loginMessage, /хранилищу браузера/);
 assert.equal(replaced, '/');
@@ -56,15 +76,13 @@ const elements = {
   '#retryConnection': { hidden: true },
 };
 context.document = { querySelector: selector => elements[selector] };
-context.state = { profile: { name: 'Игрок' }, source: null, connected: false };
 context.renderLobby = () => {};
 context.EventSource = class {
   static CLOSED = 2;
   constructor(url) { this.url = url; this.readyState = 2; }
   close() {}
 };
-vm.runInContext("let clientId = 'discord:12345'; let sessionToken = '" + 'a'.repeat(64) + "';", context);
-vm.runInContext(extract('function connect()', '\nfunction sortHand('), context);
+vm.runInContext("clientId = 'discord:12345'; sessionToken = '" + 'a'.repeat(64) + "';", context);
 vm.runInContext('connect()', context);
 vm.runInContext('state.source.onerror()', context);
 assert.equal(vm.runInContext('clientId', context), 'discord:12345');
@@ -75,8 +93,71 @@ vm.runInContext('connect()', context);
 vm.runInContext('state.source.onopen()', context);
 assert.equal(elements['#retryConnection'].hidden, true);
 
-vm.runInContext(extract('function cardsWord(', '\nasync function playCard('), context);
-vm.runInContext(extract('async function playCard(', '\nasync function act('), context);
+const gameEffects = [];
+context.document.querySelector = selector => selector === '#gameScreen'
+  ? { setAttribute: (...args) => gameEffects.push(args) }
+  : elements[selector];
+context.setView = view => { state.view = view; gameEffects.push(view); };
+context.renderGame = () => gameEffects.push('render');
+context.updateResumeButton = () => gameEffects.push('resume');
+state.game = { room: { id: 'ABC123' }, seq: 5 };
+state.actionPending = true;
+state.actionPendingSeq = 5;
+state.restoreJoin = { takeMissedEvents: seq => gameEffects.push(seq) };
+const gameEvent = (id, seq) => state.source.onmessage({ data: JSON.stringify({ type: 'game', state: { room: { id }, seq } }) });
+await gameEvent('ABC123', 4);
+assert.equal(state.game.seq, 5);
+assert.deepEqual(gameEffects, []);
+await gameEvent('ABC123', 6);
+assert.equal(state.actionPending, false);
+assert.deepEqual(gameEffects, [['aria-busy', 'false'], 'game', 'render', 'resume', 6]);
+assert.equal(state.restoreJoin, null);
+await gameEvent('OTHER1', 1);
+assert.equal(state.game.room.id, 'OTHER1');
+context.fetch = async path => {
+  const url = new URL(path, 'https://club.test');
+  assert.equal(url.pathname, '/api/watch');
+  assert.deepEqual(Object.fromEntries(url.searchParams), { id: 'discord:12345', token: 'a'.repeat(64), since: '1', until: 'any', timeout: '1500' });
+  return { ok: true, json: async () => ({ hit: true, state: { room: { id: 'ABC123' }, seq: 0 } }) };
+};
+await context.catchUpRoom('ABC123', 1);
+assert.equal(state.game.room.id, 'OTHER1');
+state.actionPending = false;
+
+const moveCard = (game, cardId, target) => {
+  const result = context.cardMove(game, cardId, target);
+  return result && JSON.parse(JSON.stringify(result));
+};
+const sixHearts = { id: '6♥', rank: '6', suit: '♥' };
+const sevenHearts = { id: '7♥', rank: '7', suit: '♥' };
+const attackSix = { id: '6♠', rank: '6', suit: '♠' };
+const attackSeven = { id: '7♥', rank: '7', suit: '♥' };
+const moveGame = {
+  you: { role: 'attacker' }, hand: [sixHearts, sevenHearts], players: [],
+  table: [], canAttack: true, trump: '♥',
+};
+assert.equal(moveCard(null, '6♥'), undefined);
+assert.equal(moveCard(moveGame, 'missing'), undefined);
+assert.deepEqual(moveCard(moveGame, '6♥'), { args: ['attack', '6♥'] });
+const table = [{ attack: attackSix, defense: sevenHearts }];
+assert.deepEqual(moveCard({ ...moveGame, table }, '7♥'), { args: ['attack', '7♥'] });
+assert.deepEqual(moveCard({ ...moveGame, table: [{ attack: attackSix }] }, '7♥'), { message: 'Можно подкидывать только 6' });
+assert.deepEqual(moveCard({ ...moveGame, canAttack: false }, '6♥'), { message: 'Сейчас подкидывать нечем' });
+assert.deepEqual(moveCard({ ...moveGame, canAttack: false, table: Array(6).fill({ attack: attackSix }) }, '6♥'), { message: 'На столе уже шесть пар — больше не подкинуть' });
+assert.deepEqual(moveCard({ ...moveGame, canAttack: false, table: [{ attack: attackSix }], players: [{ role: 'defender', cards: 1 }] }, '6♥'), { message: 'Сопернику нечем отбиваться: у него 1 карта — больше не подкинуть' });
+assert.deepEqual(moveCard({ ...moveGame, you: { role: 'attacker', finished: true } }, '6♥'), { message: 'Сейчас ходит другой игрок' });
+
+const defending = { ...moveGame, you: { role: 'defender' }, canDefend: true, table: [{ attack: attackSix }, { attack: attackSeven }] };
+assert.deepEqual(moveCard(defending, '7♥'), { args: ['defend', '7♥', '6♠'] });
+assert.deepEqual(moveCard({ ...defending, table: [...defending.table].reverse() }, '7♥'), { args: ['defend', '7♥', '6♠'] });
+assert.deepEqual(moveCard(defending, '7♥', '7♥'), { message: 'Карта 7♥ не бьёт 7♥' });
+assert.deepEqual(moveCard(defending, '7♥', 'missing'), { message: 'Сейчас отбивать нечего' });
+assert.deepEqual(moveCard({ ...defending, table: [{ attack: attackSeven }] }, '6♥'), { message: 'Карта 6♥ не бьёт 7♥' });
+assert.deepEqual(moveCard({ ...defending, canDefend: false }, '7♥'), { message: 'Сейчас отбивать нечего' });
+assert.deepEqual(moveCard({ ...defending, takePending: true }, '7♥'), { message: 'Вы уже решили взять карты' });
+assert.deepEqual(moveCard({ ...defending, canTransfer: true, takePending: true }, '6♥'), { args: ['transfer', '6♥'] });
+assert.deepEqual(moveCard({ ...defending, canTransfer: true }, '6♥', '6♠'), { args: ['defend', '6♥', '6♠'] });
+
 const game = {
   you: { role: 'attacker' },
   hand: [{ id: '6♥', rank: '6', suit: '♥' }],
@@ -84,7 +165,7 @@ const game = {
   takePending: true,
   table: [{ attack: { rank: '6', suit: '♠' }, defense: null }],
 };
-context.state.game = game;
+state.game = game;
 await vm.runInContext('playCard("6♥")', context);
 assert.equal(calls.at(-1)[0], 'attack');
 game.you.role = 'idle';
@@ -94,29 +175,107 @@ game.canAttack = false;
 game.players = [{ role: 'defender', cards: 1 }];
 await vm.runInContext('playCard("6♥")', context);
 assert.equal(calls.at(-1)[0], 'toast');
+const players = [
+  { id: 'temp:a', name: 'Борис', createdAt: 1, online: true },
+  { id: 'discord:b', name: 'Анна', createdAt: 2 },
+  { id: 'c', name: 'Вера', online: true },
+  { id: 'd', name: 'Денис', kind: 'other' },
+];
+assert.equal(JSON.stringify(context.countAdminPlayers(players)), '{"all":4,"online":2,"temp":1,"discord":1,"legacy":1}');
+assert.deepEqual(Array.from(context.filterAdminPlayers(players, '', 'all', 'recent'), player => player.id), ['discord:b', 'temp:a', 'c', 'd']);
+assert.deepEqual(Array.from(context.filterAdminPlayers(players, ' TEMP: ', 'online', 'name'), player => player.id), ['temp:a']);
+assert.deepEqual(Array.from(context.opponentSeats({ players, you: players[1] }), player => player.id), ['c', 'd', 'temp:a']);
+const opponent = { id: 'op"1', name: '<Анна>', role: 'defender', cards: 2, connected: true };
+const seatGame = { room: { status: 'playing' }, turnId: opponent.id };
+const seatHTML = context.opponentSeatHTML(opponent, seatGame);
+assert.match(seatHTML, /<button class="seat turn" data-seat="op&quot;1" type="button" aria-haspopup="dialog" aria-label="Профиль игрока &lt;Анна&gt;, 2 карты, Защищается">/);
+assert.match(seatHTML, /<span class="seat-main"><strong>&lt;Анна&gt;<\/strong><\/span>/);
+assert.equal((seatHTML.match(/class="card-back /g) || []).length, 2);
+assert.match(seatHTML, /class="role-label defender"[\s\S]*Защищается · Ходит<\/span>/);
+const waitingSeatHTML = context.opponentSeatHTML({ ...opponent, role: '', connected: false }, { room: { status: 'waiting' } });
+assert.match(waitingSeatHTML, /aria-label="Профиль игрока &lt;Анна&gt;, Не в сети"/);
+assert.match(waitingSeatHTML, /<span class="seat-state">Не в сети<\/span>/);
+assert.doesNotMatch(waitingSeatHTML, /seat-cards|card-back|role-label/);
+assert.equal(context.handView({ ...game, room: { id: 'ABC123' }, you: { turn: true }, canAttack: true }).dimmed({ rank: '7' }), true);
+
+const actionButtons = (game, pending = false) => JSON.parse(JSON.stringify(context.gameActionButtons(game, pending)));
+const playingActions = { room: { status: 'playing' }, canTake: true, canPass: true };
+assert.deepEqual(actionButtons(playingActions), [
+  { label: 'Взять карты', action: 'take', style: 'secondary-btn' },
+  { label: 'Бито', action: 'pass', style: 'primary-btn' },
+]);
+assert.deepEqual(actionButtons({ ...playingActions, takePending: true }), [
+  { label: 'Забрать карты', action: 'take', style: 'primary-btn' },
+  { label: 'Хватит, забирайте', action: 'pass', style: 'primary-btn' },
+]);
+assert.deepEqual(actionButtons(playingActions, true), []);
+const waitingActions = {
+  room: { status: 'waiting', hostId: 'host' },
+  players: [{ connected: true }, { connected: true }, { connected: false }],
+};
+assert.deepEqual(actionButtons({ ...waitingActions, you: { id: 'host' } }), [
+  { label: 'Ждём игроков (2/6)', action: null, style: 'secondary-btn', disabled: true },
+]);
+assert.deepEqual(actionButtons({ ...waitingActions, you: { id: 'guest' } }), [
+  { label: 'Ждём, пока создатель начнёт игру', action: null, style: 'secondary-btn', disabled: true },
+]);
+assert.deepEqual(actionButtons({ ...waitingActions, you: { id: 'host' }, canStart: true }), [
+  { label: 'Начать игру', action: 'start', style: 'primary-btn' },
+]);
+
+const requests = [];
+context.fetch = async (path, options) => {
+  requests.push([path, options?.method, options?.headers['Content-Type'], options && JSON.parse(options.body)]);
+  return { ok: true, json: async () => ({}) };
+};
+await context.api('/api/action', { clientId: 'discord:12345', action: 'start' });
+await context.adminApi({ op: 'list' });
+await context.authRequest('/api/auth/temp/login', { name: 'Тест', password: 'fake' });
+assert.deepEqual(requests, [
+  ['/api/action', 'POST', 'application/json', { clientId: 'discord:12345', action: 'start', token: 'a'.repeat(64) }],
+  ['/api/admin', 'POST', 'application/json', { key: '', op: 'list' }],
+  ['/api/auth/temp/login', 'POST', 'application/json', { name: 'Тест', password: 'fake' }],
+]);
+context.fetch = async () => ({ ok: false, status: 403, json: async () => ({ error: 'Отказ' }) });
+await assert.rejects(context.api('/api/action', {}), /Отказ/);
+const malformedJSON = async () => { throw new SyntaxError(); };
+context.fetch = async () => ({ ok: false, status: 500, json: malformedJSON });
+await assert.rejects(context.api('/api/action', {}), /Не удалось выполнить действие/);
+await assert.rejects(context.authRequest('/api/auth/temp/login', {}), /Вход через Discord недоступен/);
+context.fetch = async () => ({ ok: true, json: malformedJSON });
+assert.equal(Object.keys(await context.api('/api/action', {})).length, 0);
+const epoch = new Date(2025, 0, 2, 3, 4).getTime();
+assert.equal(context.clubMoment(epoch), '02.01.2025 03:04');
+assert.equal(context.clubDate(epoch / 1000, true), '02.01.2025 03:04');
+assert.equal(context.clubDate(epoch / 1000), '02.01.2025');
+assert.equal(context.clubDate(-1, true), '');
+assert.equal(context.clubMoment(Infinity), '');
+assert.deepEqual([1, 2, 5, 11, 22].map(context.cardsWord), ['карта', 'карты', 'карт', 'карт', 'карты']);
+
 let modalHTML;
 let mount;
-let handler;
-let closed = false;
 context.openModal = (html, onMount) => { modalHTML = html; mount = onMount; };
-context.closeModal = () => { closed = true; };
-context.esc = value => value;
-context.document = { querySelectorAll: () => [{ dataset: { transferCard: '6♦' }, addEventListener: (event, callback) => { handler = callback; } }] };
-game.canTransfer = true;
 game.hand.push({ id: '6♦', rank: '6', suit: '♦' });
-vm.runInContext(extract('function selectTransferCard()', '\nfunction beats('), context);
-vm.runInContext('selectTransferCard()', context);
-assert.ok(modalHTML.includes('data-transfer-card="6♥"'));
-assert.ok(modalHTML.includes('data-transfer-card="6♦"'));
-mount();
-handler();
-assert.equal(closed, true);
-assert.equal(calls.at(-1)[0], 'transfer');
-assert.equal(calls.at(-1)[1], '6♦');
+
+context.openCreateModal();
+assert.match(modalHTML, /<h2>Создать лобби<\/h2>/);
+assert.deepEqual([...modalHTML.matchAll(/<option value="(36|52)">/g)].map(match => match[1]), ['36', '52']);
+assert.deepEqual([...modalHTML.matchAll(/<option value="(0|50|100|250|500)"/g)].map(match => match[1]), ['0', '50', '100', '250', '500']);
+assert.match(modalHTML, /class="primary-btn full" id="mCreate"/);
+context.openJoinModal('A"B');
+assert.match(modalHTML, /id="mCode"[^>]+value="A&quot;B"/);
+assert.match(modalHTML, /class="primary-btn full" id="mJoin"/);
+context.openTempAccountForm();
+assert.match(modalHTML, /id="tPassword" type="text" minlength="4" maxlength="128" value="[^"]+" autocomplete="new-password"/);
+context.openPasswordReset({ name: 'Тест', kind: 'temp' });
+assert.match(modalHTML, /id="pPassword" type="password" minlength="4" maxlength="128" value="[^"]+" autocomplete="new-password"/);
+const sampleCard = { id: '6"♥', rank: '6', suit: '♥' };
+assert.match(context.cardHTML(sampleCard, 'attack target', true), /^<div data-target-card="6&quot;♥" class="card-face red attack target" data-card-id="6&quot;♥">/);
+assert.doesNotMatch(context.cardHTML(sampleCard, 'defense'), /data-target-card/);
 
 context.avatarHTML = () => '';
 context.chips = String;
-context.state.game.room = { id: 'ABC123' };
+state.game.room = { id: 'ABC123' };
 context.api = async (path, payload) => {
   assert.equal(path, '/api/player-profile');
   assert.equal(payload.clientId, 'discord:12345');
@@ -124,7 +283,6 @@ context.api = async (path, payload) => {
   assert.equal(payload.playerId, 'guest');
   return { balance: 0, games: 5, wins: 2, losses: 3 };
 };
-vm.runInContext(extract('function openPlayerPreview(', '\nif (!adminPage)'), context);
 vm.runInContext('openPlayerPreview({ id: "guest", name: "Гость", cards: 1 })', context);
 assert.match(modalHTML, /Загружаем статистику/);
 const stats = { textContent: '' };
@@ -134,7 +292,6 @@ context.api = async () => { throw new Error('offline'); };
 await mount({ querySelector: () => stats });
 assert.match(stats.textContent, /Не удалось загрузить/);
 
-vm.runInContext(extract('function animateCardFlight(', '\nlet cardDrag'), context);
 const flights = [];
 const arrivals = [];
 const destinationCard = left => ({
@@ -158,9 +315,6 @@ vm.runInContext('animateDeal(deal.game, deal.source, deal.hand, deal.seats)', co
 assert.deepEqual(flights, [['-100px -190px', 0], ['80px -190px', 90], ['-60px -190px', 180]]);
 assert.deepEqual(arrivals, [360, 450, 540]);
 
-vm.runInContext(extract('function canTransferCard(', '\nfunction renderGame()'), context);
-context.RANK_ORDER = ['6', '7', '8'];
-vm.runInContext(extract('function beats(', '\nfunction cardsWord('), context);
 const zone = { closest: selector => selector === '#tableDropZone' ? zone : null };
 const pair = { dataset: { attack: '6♠' }, closest: selector => selector === '#tableCards .pair' ? pair : null };
 context.document.querySelector = () => zone;
@@ -182,6 +336,8 @@ assert.equal(drop(trumpSix, null), null);
 assert.equal(drop(trumpSix, pair)?.mode, 'defend');
 assert.equal(drop(trumpSix, pair)?.row, '6♠');
 assert.equal(drop(trumpSix, zone)?.mode, 'transfer');
+await vm.runInContext('playCard("6♦")', context);
+assert.deepEqual(calls.at(-1), ['transfer', '6♦']);
 assert.equal(drop(game.hand[1], pair), null);
 assert.equal(drop({ rank: '7', suit: '♠' }, zone), null);
 await vm.runInContext('playCard("6♥", "6♠")', context);

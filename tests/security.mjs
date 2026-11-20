@@ -1,19 +1,23 @@
 import http from 'node:http';
 import https from 'node:https';
 import crypto from 'node:crypto';
+import { base, cleanupClubAccounts, clubCredentialsFor, TestFailure, testBackend } from './helpers/accounts.mjs';
 
-const base = process.env.BASE_URL || 'http://localhost:4173';
-const permanent = /^(discord|temp):[A-Za-z0-9_-]+$/.test(process.env.DURAK_CLIENT_ID || '') && /^[a-f0-9]{64}$/.test(process.env.DURAK_TOKEN || '') && /^(discord|temp):[A-Za-z0-9_-]+$/.test(process.env.DURAK_CLIENT_ID_B || '') && /^[a-f0-9]{64}$/.test(process.env.DURAK_TOKEN_B || '');
+await testBackend();
+const createdIds = new Set();
+const credentials = new Map();
 const tokens = new Map();
+async function account(label) {
+  const result = await clubCredentialsFor(label, createdIds);
+  credentials.set(result.clientId, result);
+  tokens.set(result.clientId, result.token);
+  return result.clientId;
+}
 const streams = new Set();
 let failures = 0;
 function tokenFor(id) {
-  if (!tokens.has(id)) tokens.set(id, permanent ? (id === process.env.DURAK_CLIENT_ID ? process.env.DURAK_TOKEN : process.env.DURAK_TOKEN_B) : crypto.randomBytes(32).toString('hex'));
+  if (!tokens.has(id)) tokens.set(id, crypto.randomBytes(32).toString('hex'));
   return tokens.get(id);
-}
-function idFor(label) {
-  if (!permanent) return label;
-  return label.endsWith('-a') ? process.env.DURAK_CLIENT_ID : process.env.DURAK_CLIENT_ID_B;
 }
 function check(label, ok, extra = '') {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${label}${extra ? ` ${extra}` : ''}`);
@@ -74,23 +78,19 @@ function connect(id, token = tokenFor(id)) {
 async function ready(id) {
   const stream = await connect(id);
   if (stream.status !== 200) stream.request.destroy();
-  if (stream.status === 400 && !permanent) {
-    throw new Error('Сервер принимает только клубные аккаунты: задайте DURAK_CLIENT_ID/DURAK_TOKEN и DURAK_CLIENT_ID_B/DURAK_TOKEN_B');
-  }
-  if (stream.status !== 200) throw new Error(`SSE ${id}: ${stream.status}`);
+  if (stream.status !== 200) throw new TestFailure(`SSE: HTTP ${stream.status}`);
   await waitFor(() => stream.messages.some(p => p.type === 'lobby'), 'initial lobby');
   return stream;
 }
 async function create(id, name) {
   const result = await post('/api/rooms', { clientId: id, name, mode: 'classic', deckSize: 36 });
-  if (result.status !== 201) throw new Error(`create: ${JSON.stringify(result)}`);
+  if (result.status !== 201) throw new TestFailure(`/api/rooms: HTTP ${result.status}`);
   return result.data.code;
 }
 const prefix = `security-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-const a = permanent ? process.env.DURAK_CLIENT_ID : `${prefix}-a`;
-const b = permanent ? process.env.DURAK_CLIENT_ID_B : `${prefix}-b`;
-const members = permanent ? [] : [a, b];
 try {
+  const a = await account(`${prefix}-a`);
+  const b = await account(`${prefix}-b`);
   let owner = await ready(a);
   const peer = await ready(b);
   const home = await create(a, 'Исходная комната');
@@ -137,7 +137,7 @@ try {
 
   async function failedJoin(label, roomId) {
     const result = await post('/api/join', { clientId: a, roomId });
-    check(`${label}: вход отклонён`, result.status >= 400 && result.status < 500, JSON.stringify(result));
+    check(`${label}: вход отклонён`, result.status >= 400 && result.status < 500, String(result.status));
     const marker = owner.messages.length;
     await post('/api/profile', { clientId: b, name: label });
     await waitFor(() => owner.messages.slice(marker).some(p => p.type === 'game'), `${label}: home broadcast`);
@@ -147,13 +147,13 @@ try {
   }
   await failedJoin('несуществующая комната', `missing-${prefix}`);
 
-  if (permanent) {
-    const missing = await post('/api/join', { clientId: a, roomId: `missing-${prefix}` });
-    check('несуществующая комната без six-seat сценария отклонена', missing.status >= 400 && missing.status < 500, String(missing.status));
+  const targetIds = [];
+  for (let i = 0; i < 6; i += 1) {
+    const id = await account(`${prefix}-target-${i}`);
+    targetIds.push(id);
+    await ready(id);
   }
-  const targetIds = permanent ? [] : Array.from({ length: 6 }, (_, i) => idFor(`${prefix}-target-${i}`));
-  for (const id of targetIds) { if (!permanent) { members.push(id); await ready(id); } }
-  if (!permanent) {
+  {
     const target = await create(targetIds[0], 'Полная комната');
     for (const id of targetIds.slice(1)) await post('/api/join', { clientId: id, roomId: target });
     await failedJoin('полная комната', target);
@@ -162,13 +162,13 @@ try {
     await failedJoin('начавшаяся партия', target);
   }
 } catch (error) {
-  if (/только клубные аккаунты/.test(String(error.message))) {
-    console.log('security: пропущен — сервис требует клубные аккаунты, задайте DURAK_CLIENT_ID/DURAK_TOKEN и DURAK_CLIENT_ID_B/DURAK_TOKEN_B');
-  } else {
-    check('сценарии безопасности завершились', false, error.stack || String(error));
-  }
+  check('сценарии безопасности завершились', false, error instanceof TestFailure || error.message.startsWith('timeout: ') ? error.message : 'ошибка запроса или ответа');
 } finally {
-  for (const id of members) await post('/api/leave', { clientId: id }).catch(() => {});
+  try {
+    await cleanupClubAccounts(credentials.values(), createdIds);
+  } catch (error) {
+    check('очистка тестовых аккаунтов', false, error.message);
+  }
   for (const stream of streams) stream.request.destroy();
 }
 console.log(failures ? `\n${failures} проверок провалено` : '\nпроверки безопасности пройдены');

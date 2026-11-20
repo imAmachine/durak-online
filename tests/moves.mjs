@@ -1,4 +1,4 @@
-import { registerClubAccounts, referenceIds } from './helpers/accounts.mjs';
+import { registerClubAccounts } from './helpers/accounts.mjs';
 const base = process.env.BASE_URL || 'http://localhost:4173';
 function tokenFor(id) {
   return tokens.get(id) || '';
@@ -6,7 +6,6 @@ function tokenFor(id) {
 const players = {};
 let failures = 0;
 import http from 'node:http';
-import crypto from 'node:crypto';
 
 function sse(url, onMessage, onError) {
   const request = http.get(url, response => {
@@ -79,8 +78,9 @@ function waitForSeq(ids, seq) {
   return waitFor(() => ids.every(id => Number.isInteger(stateOf(id)?.seq) && stateOf(id).seq >= seq));
 }
 
-const labels = await registerClubAccounts(['a', 'b', 'c']);
+const { credentials: labels, cleanup } = await registerClubAccounts(['a', 'b', 'c']);
 const tokens = new Map(labels.map(item => [item.clientId, item.token]));
+try {
 const a = labels[0].clientId, b = labels[1].clientId, c = labels[2].clientId;
 
 await connect(a, 'Алиса');
@@ -214,4 +214,14 @@ players[b].source.destroy();
 players[c].source.destroy();
 
 console.log(failures ? `\n${failures} проверок провалено` : '\nвсе проверки пройдены');
-process.exit(failures ? 1 : 0);
+process.exitCode = failures ? 1 : 0;
+} finally {
+  for (const player of Object.values(players)) {
+    player.source?.destroy();
+    player.req?.destroy();
+  }
+  try { await cleanup(); } catch (error) {
+    console.log(`FAIL очистка тестовых аккаунтов: ${error.message}`);
+    process.exitCode = 1;
+  }
+}

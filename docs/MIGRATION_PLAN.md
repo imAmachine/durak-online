@@ -118,7 +118,7 @@ viewer-specific snapshot. Legacy `/api/watch` возвращает `hit: false` 
 ### Этап 0. Контракт и baseline, 2–3 дня
 
 1. Зафиксировать JSON fixtures для `gameState`, `roomSummary`, SSE и watch.
-2. Прогнать текущие 9 suites на чистом Node reference server.
+2. Зафиксировать Rust unit и API suites на временной базе.
 3. Добавить проверки порядка JSON-событий, viewer isolation и повторной команды.
 4. Зафиксировать версии правил и таблицу legacy error/status mapping.
 
@@ -162,7 +162,7 @@ money и full-game tests. Это необходимый compatibility gate, но
 4. Убрать rules mirror из MCP; hints приходят от нового application API с той же версией правил, что и партия.
 5. Сохранить stdio JSON-RPC framing и `.crushrc` tool names.
 
-Готово, когда адаптированный `tests/mcp.mjs` запускает Rust MCP и работает против Rust API. Существующий тест жёстко запускает Node MCP и сам по себе не проверяет Rust MCP. Восстановление durable session проверяется после этапа SQLite; memory-сессии при рестарте теряются.
+Готово, когда `tests/mcp.mjs` запускает Rust MCP и работает против Rust API. Durable session проверяется после этапа SQLite.
 
 ### Этап 5. SQLite, 4–6 дней
 
@@ -231,4 +231,4 @@ MCP не вычисляет legal moves, а contract test сравнивает h
 
 ## Решение о завершении миграции
 
-Миграция оправдана только после получения durable accounts, повторяемых settlement, restart recovery или измеримого требования по многопоточному SSE. Node reference и модульный JS engine сохраняются для сравнения и тестирования; Node backend не поддерживает обязательный вход через Discord и не заменяет основной сервер. Rust-перенос не должен быть объявлен завершённым только потому, что новый бинарник запускается.
+Миграция оправдана только после получения durable accounts, повторяемых settlement, restart recovery или измеримого требования по многопоточному SSE. Rust backend и MCP являются основным серверным контуром; JavaScript остаётся на frontend и в тестовых helper-скриптах. Rust-перенос не должен быть объявлен завершённым только потому, что новый бинарник запускается.

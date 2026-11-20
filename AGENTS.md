@@ -1,23 +1,24 @@
 # AGENTS.md
 
-Browser multiplayer card game "Дурак" (Russian Durak). Plain Node.js HTTP server with
-Server-Sent Events, plain browser JavaScript frontend. No framework, no bundler, no
-dependencies, no build step. All user-facing text is Russian.
+Browser multiplayer card game "Дурак" (Russian Durak). Rust HTTP server with
+Server-Sent Events, plain browser JavaScript frontend. Rust `platform-server` and
+`platform-mcp` are the backend and MCP implementations. All user-facing text is Russian.
 
 ## Commands
 
 ```bash
 npm start        # Rust platform-server; PORT env (default 4173), HOST env (default 0.0.0.0)
-node server.js   # legacy reference only; no mandatory Discord login
-npm run mcp      # mcp/server.mjs; MCP stdio server over the HTTP API
-npm test
-BASE_URL=http://127.0.0.1:4174 npm test
+npm run mcp      # Rust platform-mcp; MCP stdio server over the HTTP API
+TEST_BACKEND=rust npm test
+TEST_BACKEND=rust BASE_URL=http://127.0.0.1:4174 npm test
 ```
 
 - There is no lint, typecheck, format, or build step. There is no CI config.
-- Tests are not self-contained: start the server first in another terminal, then run
-  `npm test`. Integration tests use `BASE_URL` when set, otherwise `http://localhost:4173`.
-- `npm test` chains fifteen `.mjs` scripts with `&&`, so the first failing suite stops the
+- Tests are not self-contained: start the Rust `platform-server` first in another terminal, then
+  run `npm test`. The helpers reject every `TEST_BACKEND` value except `rust`; integration
+  tests use `BASE_URL` when set, otherwise `http://localhost:4173`. These commands document
+  the available procedure; they do not claim that an integration run has passed.
+- `npm test` chains ten `.mjs` scripts with `&&`, so the first failing suite stops the
   rest. Scripts exit non-zero on failure and print `ok`/`FAIL` lines.
 - Tests use global `fetch` and top-level `await`, so they need Node 18+. No package
   dependencies exist; there is no lockfile.
@@ -25,30 +26,15 @@ BASE_URL=http://127.0.0.1:4174 npm test
 
 ## Architecture
 
-### Server (`server.js`, 1072 lines)
+### Rust backend
 
-Single-file Node HTTP server. All state is in in-memory structures:
+The backend is `rust/crates/platform-server` with `platform-api`; gameplay rules are
+implemented by `rust/crates/durak-engine`.
 
-- `clients: Map<clientId, { id, name, res, roomId }>` — one entry per open SSE stream.
-- `sessions: Map<clientId, token>` — session token bound to the client id; tokens must match
-  `/^[a-f0-9]{64}$/`.
-- `rooms: Map<roomCode, room>` — room code is 6 uppercase hex chars.
-- `history: []` — finished games, unbounded; lobby payload sends only the last 8 reversed.
-- `accounts: Map<clientId, { id, name, balance, games, wins, losses }>` — club profile and
-  wallet per client id, created on first SSE connect. Not persisted anywhere.
 
-Entry points:
+The Rust backend stores rooms and accounts in SQLite and maintains active connections in memory.
 
-- `GET /events?id=<clientId>&token=<token>&name=<name>` — the only real-time channel (SSE).
-  Registers the client only with a valid token, attaches it to its room if it is already a
-  player, sends an initial `game` or `noroom` event, then `lobby`. On disconnect the player is
-  marked `connected: false` but stays in the room. The browser reconnects automatically
-  (`retry: 2000`).
-- `POST /api/rooms` — create room; the caller becomes host and first player.
-- `POST /api/join` — join by code (case-insensitive); reconnecting existing players update
-  name/connection instead of adding a new seat.
-- `POST /api/action` — all gameplay actions, delegated to `act()`:
-  `start | attack | defend | transfer | take | pass`.
+
 - `GET /api/watch?id=<id>&token=<token>&since=<seq>&until=<mode>&timeout=<ms>` — the
   server-side hook: a long-poll that returns as soon as the room's event sequence passes
   `since` and `until` matches (`any | game | your-turn | opponent | finished`), otherwise
@@ -63,7 +49,6 @@ Entry points:
 - Static serving is allowlisted to `index.html`, `admin.html`, `app.js`, and `style.css`
   (`/` → `index.html`, `/admin` → `admin.html`).
 
-The Rust `platform-server` is the real server (the Node file below is the legacy reference).
 Players log in with the name and password of a club account through
 `POST /api/auth/temp/login`, which answers `{ clientId: "temp:...", token }`; the token is a
 hex digest (64 lowercase hex chars) and every SSE/POST keeps using that shape. Admins mint
@@ -86,39 +71,11 @@ are 403 for a wrong key, 404 for an unknown player.
 API responses are JSON; errors use `{ error: "<Russian message>" }` with status 400/403/404,
 or 503 when the admin panel is disabled.
 
-Game flow inside `server.js`:
-
-- `createRoom()` → `startRound()` (shuffle, deal 6, choose the lowest trump, or lowest card
-  when nobody has trump) → `act()`.
-- `act()` validates and mutates the room, then calls `broadcastRoom()`.
-- After a trick: `pass` (all cards beaten) or `collectTable()` (defender took cards) clears
-  the table, calls `refillHands()` before rotating roles, then `settle()` → `normalizeRoles()` →
-  `updateTurn()` → `broadcastRoom()`.
-- `finishGame(room, loser, message)` sets `room.finished` and `finishedAt`, appends history,
-  and calls `settleAccounts()` (stats + bet payout). `settle()` and active `leaveRoom()` use it.
-  Offline cancellation instead uses `cancelGame()` to refund stakes without stats or history.
-
-Money model: `room.bet` is one of `BETS` (`0/50/100/250/500`, anything else becomes 0),
-`room.pot` is collected at `start` by `chargeStakes()` (host starts, all connected players
-must afford it), and `settleAccounts()` credits `room.lastPayouts` per player from the pot
-to everyone except the loser. Starting balance is `START_BALANCE = 1000`. An active player leaving during play loses and
-ends the game; a player already finished may leave while remaining in the roster for settlement.
-
-`gameState(room, clientId)` builds a per-viewer snapshot: own hand only, opponents' card
-counts and roles, table, trump, deck size, `room.bet`, `payout` (this viewer's last net
-result), derived permission flags (`canAttack`, `canDefend`, `canTransfer`, `canPass`,
-`canTake`, `canStart`), and messages.
-`broadcastRoom()` sends each player a snapshot tailored to their own id; there is no shared
-broadcast payload, so hidden information never leaks by construction. Preserve that when
-adding fields.
-
-Every broadcast also records one room event: `recordEvent()` bumps `room.seq` and appends
-`{ seq, action, actorId, actorName, cardId, targetCardId, status, turnId, message }` to
-`room.events` (last 40). The action and card come from `markEvent()`, which `act()` sets
-before validating; a rejected action clears it, so a failed move never lands in the journal.
-`releaseHooks(room)` then wakes the pending `/api/watch` waiters. Snapshots expose `seq` and
-the last eight events as `log`. Events carry only public data (played cards, actor ids,
-messages), so they are safe in a per-viewer snapshot.
+The engine validates actions and manages dealing, tricks, refill, and settlement. The API
+persists transitions, accounts, and history, then publishes per-player snapshots and public
+events. Snapshots include only the viewer's hand; preserve this privacy when adding fields.
+Stakes are 0, 50, 100, 250, or 500; the starting balance is 1000. Offline cancellation
+refunds stakes without recording a game.
 
 ### Client (`app.js`, 2329 lines)
 
@@ -164,18 +121,17 @@ in `index.html`. Global mutable `state` object; server snapshots drive rendering
   (`sessionStorage`), so two tabs are two players.
 - Invite links are `/?code=XXXXXX`; `openJoinModal(code)` pre-fills the join modal.
 
-### MCP (`mcp/server.mjs`, 1538 lines + `mcp/strategy.mjs`, 259 lines)
+### Rust MCP
+
+The production MCP is `rust/crates/platform-mcp`; its strategy is in `src/strategy.rs`.
 
 A dependency-free MCP server on stdio (newline-delimited JSON-RPC) that drives the HTTP API,
 so an agent can open seats, play, and exercise the service. Project `.crushrc` registers it as
-`durak` with `node mcp/server.mjs`; `DURAK_URL` (default `http://127.0.0.1:4173`) selects the
+`durak` with `cargo run --manifest-path rust/Cargo.toml -p platform-mcp --locked`; `DURAK_URL` (default `http://127.0.0.1:4173`) selects the
 service and `DURAK_ADMIN_KEY`/`ADMIN_KEY` supplies the club key. Nothing needs the repo cwd:
 the tools only speak HTTP.
 
-`mcp/strategy.mjs` holds every rules and policy decision as pure functions (`beats`,
-`attachOptions`, `defenseOptions`, `dumpOptions`, `attackChoices`, `chooseMove`, `Ledger`) so
-`tests/strategy.mjs` covers them without a server. `server.mjs` keeps transport, seating and
-formatting; do not duplicate a rule there.
+`src/strategy.rs` contains strategy and card accounting, covered by Rust unit tests.
 
 - `Seat` holds one player: a 64-hex session `token`, an open SSE request to `/events`, and the
   latest `account`/`game`/`lobby` payloads plus a `Ledger`. It reconnects every second while
@@ -186,9 +142,7 @@ formatting; do not duplicate a rule there.
   `DURAK_MCP_SESSIONS` (default `~/.local/state/durak-mcp/sessions.json`, mode 0600) on connect
   and disconnect, and `restoreSessions()` reopens them in parallel before the first request is
   handled, so the SSE streams reattach on their own. Stale entries are dropped.
-- `durak_action` posts one action and returns a fresh snapshot. A rejected action is retried
-  once after a short wait (the SSE stream may lag the POST), and it never injects a different
-  action: masking a rejection with `pass` used to corrupt the table.
+- `durak_action` posts one action and returns a fresh snapshot. Rejected actions are reported without retrying or substituting another action.
 - `durak_watch` (and `durak_wait`) drive the server hook `/api/watch`: they long-poll with
   the seat's last `game.seq`, so the call returns the moment the condition matches and
   replays the events the seat missed. `durak_watch` loops chunks for up to `totalMs`
@@ -247,7 +201,7 @@ The Rust adapter `rust/crates/platform-mcp` mirrors the same policy in
 `attack_choices`, `choose_move`, `Ledger`) and exposes the same `durak_turn` tool, so both
 servers make identical decisions and report the same `hidden` counts. Its unit tests cover
 beat order, trump economy, transfer-vs-defense, dumping, and ledger accounting. Keep the two
-implementations in step: change the policy in both, or the Node and Rust agents will disagree
+implementations in step: change the policy and its Rust tests together
 at the table.
 
 ### Styles (`style.css`)
@@ -362,11 +316,13 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
 - **Identity is tab-scoped and token-bound.** The client id and token are kept in
   `sessionStorage` (`durak.client` and `durak.token`); a different token cannot replace an
   existing session. A reconnect with the same token replaces the prior SSE stream.
-- **Everything is in memory.** Restarting the server loses rooms, players, history, and club
-  accounts (balances and stats). A 30-second cleanup interval cancels a playing room only when
-  all players have been offline for 5 minutes, refunds every stake without game stats, and
-  retains the finished room for 30 minutes using `finishedAt`; waiting rooms with the same
-  offline grace are removed.
+- **Rust persistence is split between SQLite and memory.** Game snapshots, account changes,
+  transitions, and finished history are persisted by `platform-api`; SSE clients, sessions,
+  and pending OAuth flows remain in memory. Active rooms are restored after restart only when
+  saved player identities pass the startup checks. The frontend compatibility layer still keeps
+  rooms, accounts, and history in memory; restarting it loses that state. Rust cancels a room
+  after five minutes with every player offline, refunds stakes without game stats, and retains
+  finished rooms for 30 minutes.
 - **Server rules are authoritative.** Keep `gameState()` permission flags, `act()` validation,
   and client pre-checks consistent. Attack capacity counts unbeaten rows, not already beaten
   pairs; transfer capacity includes the additional transfer card.
@@ -389,18 +345,20 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
 - Rust migration planning: `docs/ARCHITECTURE.md` defines target boundaries for the
   multi-game platform and SQLite-ready account model; `docs/MIGRATION_PLAN.md`
   defines the staged engine, API, MCP and persistence migration. The browser UI stays
-  JavaScript and the legacy API contract is preserved during the transition.
+  JavaScript remains only on the frontend, and the API contract is preserved.
 
 ## Testing notes
 
 - `engine` and `client` are self-contained VM-based regression suites; the others
-  exercise a running server. Suites that need real identities call
-  `registerClubAccounts()` from `tests/helpers/accounts.mjs`, which mints temporary club
-  accounts with `ADMIN_KEY` (default `test-only-secret`) and logs in, because
-  `platform-server` only accepts `discord:` and `temp:` client ids. `tests/security.mjs`
-  still uses throwaway ids against the Node reference server, so under `npm test` against
-  Rust it is expected to fail unless `DURAK_CLIENT_ID`/`DURAK_TOKEN` and
-  `DURAK_CLIENT_ID_B`/`DURAK_TOKEN_B` are set to two logged-in club sessions:
+  exercise the running Rust server. Suites that need real identities call
+  `registerClubAccounts()` from `tests/helpers/accounts.mjs`, which creates temporary club
+  accounts through `/api/admin` using `ADMIN_KEY` (default `test-only-secret`) and logs in.
+  `tests/security.mjs` follows the same path: its `account()` helper creates and logs in
+  each temporary account itself, then deletes the accounts during cleanup. No external
+  `DURAK_CLIENT_ID` or `DURAK_TOKEN` values are required by that test. The helper rejects
+  `TEST_BACKEND=node`; the current test backend is Rust. The helper is being corrected after
+  cleanup issues were found; do not treat these notes as evidence that an integration run has
+  passed:
   - `tests/engine.mjs` — engine rules, transfer card/capacity checks, leave and offline cleanup.
   - `tests/client.mjs` — client session token generation/storage and transfer UI behavior.
   - `tests/strategy.mjs` — pure MCP policy: beat/trump rules, attack and dump choices,
@@ -419,7 +377,7 @@ returns to the trigger on dismissal. Preserve these keyboard and reduced-motion 
     betting table, admin balance top-up pushed over SSE, rename, password change, reset.
   - `tests/full-game.mjs` — simulates a full 2-player game step by step (also checks deck
     conservation), then restarts and asserts 6-card hands and a 24-card deck.
-  - `tests/mcp.mjs` — spawns `mcp/server.mjs` and drives it over stdio: handshake, tool list
+  - `tests/mcp.mjs` — spawns Rust `platform-mcp` and drives it over stdio: handshake, tool list
     with `readOnlyHint` annotations, two seats (`durak_connect` with `create: true` or club
     `login`+`password`), create/join/start, state/hints/admin, a `durak_watch` wait on the
     opponent's move, a full `durak_follow` game, a `durak_autoplay` run with generated club

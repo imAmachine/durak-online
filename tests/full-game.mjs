@@ -1,6 +1,5 @@
-import { registerClubAccounts, referenceIds } from './helpers/accounts.mjs';
+import { registerClubAccounts } from './helpers/accounts.mjs';
 import http from 'node:http';
-import crypto from 'node:crypto';
 
 const base = process.env.BASE_URL || 'http://localhost:4173';
 function tokenFor(id) {
@@ -69,8 +68,9 @@ function waitForSeq(ids, seq) {
   return waitFor(() => ids.every(id => Number.isInteger(players[id].state?.seq) && players[id].state.seq >= seq));
 }
 
-const labels = await registerClubAccounts(['a', 'b']);
+const { credentials: labels, cleanup } = await registerClubAccounts(['a', 'b']);
 const tokens = new Map(labels.map(item => [item.clientId, item.token]));
+try {
 const a = labels[0].clientId, b = labels[1].clientId;
 await connect(a, 'Алиса');
 await connect(b, 'Борис');
@@ -157,4 +157,14 @@ check('колода пересоздана', players[a].state.deck === 24, Strin
 players[a].source.destroy();
 players[b].source.destroy();
 console.log(failures ? `\n${failures} проверок провалено` : '\nсимуляция пройдена без ошибок');
-process.exit(failures ? 1 : 0);
+process.exitCode = failures ? 1 : 0;
+} finally {
+  for (const player of Object.values(players)) {
+    player.source?.destroy();
+    player.req?.destroy();
+  }
+  try { await cleanup(); } catch (error) {
+    console.log(`FAIL очистка тестовых аккаунтов: ${error.message}`);
+    process.exitCode = 1;
+  }
+}

@@ -1,4 +1,4 @@
-import { registerClubAccounts, referenceIds } from './helpers/accounts.mjs';
+import { registerClubAccounts } from './helpers/accounts.mjs';
 const base = process.env.BASE_URL || 'http://localhost:4173';
 const adminKey = process.env.ADMIN_KEY || 'test-only-secret';
 function tokenFor(id) {
@@ -81,8 +81,9 @@ function waitFor(predicate, timeout = 2500) {
   });
 }
 
-const labels = await registerClubAccounts(['a', 'b']);
+const { credentials: labels, cleanup } = await registerClubAccounts(['a', 'b']);
 const tokens = new Map(labels.map(item => [item.clientId, item.token]));
+try {
 const a = labels[0].clientId, b = labels[1].clientId;
 await connect(a, 'Анна');
 await connect(b, 'Богдан');
@@ -159,3 +160,14 @@ players[a].source.destroy();
 players[b].source.destroy();
 console.log(failures ? `\n${failures} проверок провалено` : '\nденьги и админка работают');
 process.exitCode = failures ? 1 : 0;
+
+} finally {
+  for (const player of Object.values(players)) {
+    player.source?.destroy();
+    player.req?.destroy();
+  }
+  try { await cleanup(); } catch (error) {
+    console.log(`FAIL очистка тестовых аккаунтов: ${error.message}`);
+    process.exitCode = 1;
+  }
+}

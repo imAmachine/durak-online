@@ -16,6 +16,12 @@ let sessionToken = credentials?.token || '';
 const RANK_ORDER = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'В', 'Д', 'К', 'Т'];
 const SUIT_ORDER = ['♠', '♥', '♦', '♣'];
 const AVATAR_TINTS = ['#dceadf', '#f0dfe2', '#f2e7ca', '#dbe7f1', '#e6e0f1', '#f6e2d6'];
+const MAX_ROOM_PLAYERS = 6;
+const MAX_TABLE_PAIRS = 6;
+const INITIAL_HAND_SIZE = 6;
+const DECK_SIZES = [36, 52];
+const SEAT_SEQUENCE_WAIT_MS = 400;
+const ROOM_WATCH_TIMEOUT_MS = 1500;
 const BET_OPTIONS = [0, 50, 100, 250, 500];
 const EMPTY_ACCOUNT = { balance: 0, games: 0, wins: 0, losses: 0 };
 const adminPage = document.body.dataset.admin === 'page';
@@ -101,11 +107,15 @@ function avatarHTML(person, className = 'mini-avatar') {
   return `<span class="${className} avatar-tint" style="background:${tint}">${esc(initials(name))}</span>`;
 }
 
-async function api(path, body) {
-  const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, ...(body.clientId ? { token: sessionToken } : {}) }) });
+async function requestJSON(path, body, errorMessage) {
+  const response = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || 'Не удалось выполнить действие');
+  if (!response.ok) throw new Error(data.error || errorMessage);
   return data;
+}
+
+async function api(path, body) {
+  return requestJSON(path, { ...body, ...(body.clientId ? { token: sessionToken } : {}) }, 'Не удалось выполнить действие');
 }
 
 let toastTimer = null;
@@ -138,6 +148,20 @@ function openModal(html, onMount) {
   if (onMount) onMount(body);
   (body.querySelector('input, select, button') || backdrop.querySelector('#modalClose')).focus();
 }
+function modalHeadingHTML(label, title, subtitle) {
+  return `<div class="modal-label">${esc(label)}</div>
+    <h2>${esc(title)}</h2>
+    <p class="modal-subtitle">${esc(subtitle)}</p>`;
+}
+
+function primaryButtonHTML(id, label, full = false) {
+  return `<button class="primary-btn${full ? ' full' : ''}" id="${id}">${esc(label)}</button>`;
+}
+
+function passwordFieldHTML(id, label, type) {
+  return `<label>${esc(label)}<input id="${id}" type="${type}" minlength="4" maxlength="128" value="${esc(generatePassword())}" autocomplete="new-password"></label>`;
+}
+
 function closeModal() {
   if (!backdrop) return;
   backdrop.classList.remove('open');
@@ -185,11 +209,8 @@ if (document.querySelector('#profileBtn')) document.querySelector('#profileBtn')
   setView('cabinet');
 });
 
-async function authRequest(path, body) {
-  const response = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || 'Вход через Discord недоступен');
-  return data;
+function authRequest(path, body) {
+  return requestJSON(path, body, 'Вход через Discord недоступен');
 }
 
 async function prepareTemporaryLogin() {
@@ -292,36 +313,6 @@ async function completeDiscordLogin() {
   }
 }
 
-async function prepareDiscordLogin() {
-  const button = document.querySelector('#discordLogin');
-  if (button) button.addEventListener('click', async () => {
-    if (button.disabled) return;
-    button.disabled = true;
-    try {
-      const data = await authRequest('/api/auth/discord/start', {});
-      if (!data.url || !data.flowSecret) throw new Error('Сервер не вернул данные входа');
-      const invite = inviteCodeFromUrl(new URL(location.href));
-      if (invite) sessionStorage.setItem('durak.discord.invite', invite);
-      else sessionStorage.removeItem('durak.discord.invite');
-      sessionStorage.setItem('durak.discord.flowSecret', data.flowSecret);
-      location.assign(data.url);
-    } catch (error) {
-      button.disabled = false;
-      setDiscordLoginState(true, `Не удалось начать вход: ${error.message}`);
-    }
-  });
-  try {
-    const data = await authRequest('/api/auth/providers');
-    if (Array.isArray(data.providers) && data.providers.includes('discord')) {
-      const status = document.querySelector('#discordStatus');
-      setDiscordLoginState(true, status.textContent.includes('Не удалось') || status.textContent.includes('отменён') || status.textContent.includes('истекла') || status.textContent.includes('хранилищу') ? status.textContent : 'Войдите, чтобы присоединиться к клубу.');
-    } else {
-      setDiscordLoginState(false, 'Вход через Discord пока не настроен');
-    }
-  } catch (error) {
-    setDiscordLoginState(false, 'Вход через Discord недоступен');
-  }
-}
 function renderProfile() {
   const name = state.account.name || state.profile.name;
   const nameNode = document.querySelector('#profileName');
@@ -483,10 +474,14 @@ function renderMasthead() {
   document.querySelector('#mastheadTime').textContent = now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 }
 
+function filterLobbyRooms(rooms, filter) {
+  return rooms.filter(room => filter === 'all' || room.mode === filter);
+}
+
 function renderLobby() {
   document.querySelector('#onlineCount').textContent = state.lobby.online;
   const grid = document.querySelector('#gamesGrid');
-  const rooms = state.lobby.rooms.filter(room => state.filter === 'all' || room.mode === state.filter);
+  const rooms = filterLobbyRooms(state.lobby.rooms, state.filter);
   document.querySelector('#roomCount').textContent = rooms.length ? String(rooms.length).padStart(2, '0') : '';
   const tables = state.lobby.rooms.length;
   const online = Number(state.lobby.online) || 0;
@@ -582,9 +577,7 @@ function openCreateModal() {
   const defaultName = `${state.account.name || state.profile.name} — партия`;
   const options = BET_OPTIONS.map(bet => `<option value="${bet}" ${bet > state.account.balance ? 'disabled' : ''}>${betLabel(bet)}</option>`).join('');
   openModal(`
-    <div class="modal-label">НОВАЯ ИГРА</div>
-    <h2>Создать лобби</h2>
-    <p class="modal-subtitle">После создания вы получите код приглашения для друзей</p>
+    ${modalHeadingHTML('НОВАЯ ИГРА', 'Создать лобби', 'После создания вы получите код приглашения для друзей')}
     <label>Название лобби<input id="mRoomName" maxlength="40" value="${esc(defaultName)}"></label>
     <div class="modal-grid">
       <label>Режим
@@ -596,8 +589,7 @@ function openCreateModal() {
       </label>
       <label>Колода
         <select id="mDeck">
-          <option value="36">36 карт</option>
-          <option value="52">52 карты</option>
+          ${DECK_SIZES.map(size => `<option value="${size}">${size} карт</option>`).join('\n          ')}
         </select>
       </label>
       <label class="wide">Ставка
@@ -605,7 +597,7 @@ function openCreateModal() {
       </label>
     </div>
     <p class="modal-note">Ставку вносит каждый игрок при старте партии. Дурак остаётся без своей ставки, остальные делят банк. Баланс: ${chips(state.account.balance)} фишек.</p>
-    <button class="primary-btn full" id="mCreate">Создать лобби</button>
+    ${primaryButtonHTML('mCreate', 'Создать лобби', true)}
   `, root => {
     root.querySelector('#mBet').addEventListener('change', event => {
       if (Number(event.target.value) > state.account.balance) {
@@ -641,11 +633,9 @@ function openCreateModal() {
 
 function openJoinModal(code = '') {
   openModal(`
-    <div class="modal-label">ПРИСОЕДИНИТЬСЯ</div>
-    <h2>Войти в лобби</h2>
-    <p class="modal-subtitle">Введите код, который прислал создатель игры</p>
+    ${modalHeadingHTML('ПРИСОЕДИНИТЬСЯ', 'Войти в лобби', 'Введите код, который прислал создатель игры')}
     <label>Код приглашения<input id="mCode" maxlength="12" placeholder="например, A1B2C3" value="${esc(code)}" style="text-transform:uppercase;letter-spacing:2px"></label>
-    <button class="primary-btn full" id="mJoin">Войти в игру</button>
+    ${primaryButtonHTML('mJoin', 'Войти в игру', true)}
   `, root => {
     const input = root.querySelector('#mCode');
     input.focus();
@@ -669,12 +659,7 @@ function openJoinModal(code = '') {
   });
 }
 
-function bindMainPage() {
-document.querySelector('#createBtn').addEventListener('click', openCreateModal);
-document.querySelector('#heroCreateBtn').addEventListener('click', openCreateModal);
-document.querySelector('#joinRoomBtn').addEventListener('click', () => openJoinModal());
-
-document.querySelector('#historyBtn').addEventListener('click', () => {
+function openHistoryModal() {
   const items = state.lobby.history;
   openModal(`
     <div class="modal-label">АРХИВ</div>
@@ -682,7 +667,7 @@ document.querySelector('#historyBtn').addEventListener('click', () => {
     <p class="modal-subtitle">Последние завершённые партии на сервере</p>
     ${items.length ? `<ul class="history-list">${items.map(item => `<li><span>${esc(item.room)}<br><small>${item.mode === 'transfer' ? 'Переводной' : 'Подкидной'}${item.bet ? ` · ставка ${chips(item.bet)}` : ''} · ${clubMoment(item.at)}</small></span><strong>${item.loser === 'Ничья' ? 'Ничья' : `${esc(item.loser)} проиграл`}</strong></li>`).join('')}</ul>` : '<div class="empty-state">Пока ни одна партия не завершилась</div>'}
   `);
-});
+}
 
 const RULES_HTML = `
   <div class="modal-label">ПРАВИЛА</div>
@@ -705,7 +690,12 @@ const RULES_HTML = `
 function openRulesModal() {
   openModal(RULES_HTML);
 }
-document.querySelector('#gameRules').addEventListener('click', openRulesModal);
+function bindMainPage() {
+  document.querySelector('#createBtn').addEventListener('click', openCreateModal);
+  document.querySelector('#heroCreateBtn').addEventListener('click', openCreateModal);
+  document.querySelector('#joinRoomBtn').addEventListener('click', () => openJoinModal());
+  document.querySelector('#historyBtn').addEventListener('click', openHistoryModal);
+  document.querySelector('#gameRules').addEventListener('click', openRulesModal);
 }
 
 if (!adminPage) bindMainPage();
@@ -750,13 +740,11 @@ function bootstrapAdminPage() {
 
 function adminGateHTML() {
   return `
-    <div class="modal-label">ДОСТУП</div>
-    <h2>Панель клуба</h2>
-    <p class="modal-subtitle">Ключ задаётся переменной окружения ADMIN_KEY на сервере</p>
+    ${modalHeadingHTML('ДОСТУП', 'Панель клуба', 'Ключ задаётся переменной окружения ADMIN_KEY на сервере')}
     <label>Ключ администратора<input id="aKey" type="password" autocomplete="off" placeholder="Ключ"></label>
     <div class="modal-actions">
       <button class="secondary-btn" id="aCancel">На главную</button>
-      <button class="primary-btn" id="aEnter">Войти</button>
+      ${primaryButtonHTML('aEnter', 'Войти')}
     </div>
   `;
 }
@@ -829,13 +817,11 @@ function signOutAdmin() {
   toast('Доступ к панели закрыт');
 }
 
-function adminFilteredPlayers() {
-  const term = adminState.query.trim().toLowerCase();
-  const players = adminState.players.filter(player => {
-    if (adminState.filter === 'online' && !player.online) return false;
-    if (adminState.filter !== 'all' && adminState.filter !== 'online' && adminKind(player) !== adminState.filter) return false;
-    if (!term) return true;
-    return player.name.toLowerCase().includes(term) || player.id.toLowerCase().includes(term);
+function filterAdminPlayers(players, query, filter, sort) {
+  const term = query.trim().toLowerCase();
+  const matches = players.filter(player => {
+    if (filter === 'online' ? !player.online : filter !== 'all' && adminKind(player) !== filter) return false;
+    return !term || player.name.toLowerCase().includes(term) || player.id.toLowerCase().includes(term);
   });
   const sorters = {
     recent: (a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0) || a.name.localeCompare(b.name, 'ru'),
@@ -844,13 +830,17 @@ function adminFilteredPlayers() {
     games: (a, b) => b.games - a.games || b.wins - a.wins || a.name.localeCompare(b.name, 'ru'),
     online: (a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name, 'ru'),
   };
-  return players.sort(sorters[adminState.sort] || sorters.recent);
+  return matches.sort(sorters[sort] || sorters.recent);
 }
 
-function adminFilterCount(kind) {
-  if (kind === 'all') return adminState.players.length;
-  if (kind === 'online') return adminState.players.filter(player => player.online).length;
-  return adminState.players.filter(player => adminKind(player) === kind).length;
+function countAdminPlayers(players) {
+  const counts = { all: players.length, online: 0, temp: 0, discord: 0, legacy: 0 };
+  for (const player of players) {
+    const kind = adminKind(player);
+    if (kind === 'temp' || kind === 'discord' || kind === 'legacy') counts[kind] += 1;
+    if (player.online) counts.online += 1;
+  }
+  return counts;
 }
 
 function copyIconHTML() {
@@ -899,16 +889,15 @@ async function copyText(value) {
 
 function clubMoment(epochMs) {
   const value = Number(epochMs);
-  if (!Number.isFinite(value) || value <= 0) return '';
-  const date = new Date(value);
-  const pad = number => String(number).padStart(2, '0');
-  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return Number.isFinite(value) && value > 0 ? formatClubDate(new Date(value), true) : '';
 }
 
 function clubDate(seconds, withTime) {
   const value = Number(seconds);
-  if (!seconds || !Number.isFinite(value) || value <= 0) return '';
-  const date = new Date(value * 1000);
+  return seconds && Number.isFinite(value) && value > 0 ? formatClubDate(new Date(value * 1000), withTime) : '';
+}
+
+function formatClubDate(date, withTime) {
   const pad = number => String(number).padStart(2, '0');
   const day = `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()}`;
   return withTime ? `${day} ${pad(date.getHours())}:${pad(date.getMinutes())}` : day;
@@ -925,10 +914,11 @@ const ADMIN_SORTS = [
 function renderAdminToolbar() {
   const host = document.querySelector('#adminFilters');
   if (!host) return;
+  const counts = countAdminPlayers(adminState.players);
   host.innerHTML = `
     <div class="admin-filters" role="group" aria-label="Фильтр игроков">
       ${ADMIN_FILTERS.map(([key, label]) => {
-        const count = adminFilterCount(key);
+        const count = counts[key];
         return `<button type="button" data-filter="${key}" class="${adminState.filter === key ? 'is-active' : ''}" aria-pressed="${adminState.filter === key}"${count ? '' : ' disabled'}><span>${label}</span><b>${count}</b></button>`;
       }).join('')}
     </div>
@@ -957,7 +947,7 @@ function renderAdminPage() {
   const meta = document.querySelector('#adminMeta');
   if (!list) return;
   const online = adminState.players.filter(player => player.online).length;
-  const players = adminFilteredPlayers();
+  const players = filterAdminPlayers(adminState.players, adminState.query, adminState.filter, adminState.sort);
   if (meta) meta.textContent = adminState.loading
     ? 'Обновляем список…'
     : `${players.length} из ${adminState.players.length} профилей · ${online} онлайн · баланс всего ${chips(adminState.players.reduce((sum, player) => sum + player.balance, 0))} фишек`;
@@ -1068,8 +1058,8 @@ function openPasswordReset(player) {
     <h2>${esc(player.name)}</h2>
     <p class="modal-subtitle">${needsName ? 'Старый пароль перестанет действовать, открытые сессии закроются. Задайте ещё и настоящее имя: сейчас здесь заглушка.' : 'Старый пароль перестанет действовать, открытые сессии закроются.'}</p>
     ${needsName ? `<label>Имя<input id="pName" maxlength="20" value="${esc(player.name)}" autocomplete="off"></label>` : ''}
-    <label>Новый пароль<input id="pPassword" type="password" minlength="4" maxlength="128" value="${esc(generatePassword())}" autocomplete="new-password"></label>
-    <div class="modal-actions"><button class="secondary-btn" id="pCancel">Отмена</button><button class="primary-btn" id="pSave">Сменить пароль</button></div>
+    ${passwordFieldHTML('pPassword', 'Новый пароль', 'password')}
+    <div class="modal-actions"><button class="secondary-btn" id="pCancel">Отмена</button>${primaryButtonHTML('pSave', 'Сменить пароль')}</div>
   `, root => {
     root.querySelector('#pCancel').addEventListener('click', closeModal);
     root.querySelector('#pSave').addEventListener('click', async () => {
@@ -1081,7 +1071,7 @@ function openPasswordReset(player) {
       button.disabled = true;
       try {
         await adminApi({ op: 'update', id: player.id, ...(nameInput ? { name: nameInput.value.trim() } : {}), password });
-        openModal(`<div class="modal-label">ПАРОЛЬ ОБНОВЛЁН</div><h2>${esc(nameInput ? nameInput.value.trim() || player.name : player.name)}</h2><p class="modal-subtitle">Передайте новый пароль игроку. Прежний больше не действует.</p><div class="wallet"><strong>Пароль: ${esc(password)}</strong></div><div class="modal-actions"><button class="primary-btn" id="pDone">Готово</button></div>`, done => done.querySelector('#pDone').addEventListener('click', closeModal));
+        openModal(`<div class="modal-label">ПАРОЛЬ ОБНОВЛЁН</div><h2>${esc(nameInput ? nameInput.value.trim() || player.name : player.name)}</h2><p class="modal-subtitle">Передайте новый пароль игроку. Прежний больше не действует.</p><div class="wallet"><strong>Пароль: ${esc(password)}</strong></div><div class="modal-actions">${primaryButtonHTML('pDone', 'Готово')}</div>`, done => done.querySelector('#pDone').addEventListener('click', closeModal));
         loadAdminPlayers();
       } catch (error) {
         button.disabled = false;
@@ -1126,6 +1116,10 @@ function renderAdminEditor(host) {
       <button class="secondary-btn danger" id="aDelete">Удалить</button>
     </div>
   `;
+  bindAdminEditor(host, player);
+}
+
+function bindAdminEditor(host, player) {
   let armed = false;
   const armButton = (button, label) => {
     if (!armed) {
@@ -1209,12 +1203,10 @@ function renderAdminEditor(host) {
 
 function openTempAccountForm() {
   openModal(`
-    <div class="modal-label">НОВЫЙ ДОСТУП</div>
-    <h2>Учётная запись</h2>
-    <p class="modal-subtitle">Передайте игроку имя и пароль. Пароль сохраняется только в виде хеша и показывается один раз.</p>
+    ${modalHeadingHTML('НОВЫЙ ДОСТУП', 'Учётная запись', 'Передайте игроку имя и пароль. Пароль сохраняется только в виде хеша и показывается один раз.')}
     <label>Имя игрока<input id="tName" maxlength="20" autocomplete="off"></label>
-    <label>Пароль<input id="tPassword" type="text" minlength="4" maxlength="128" value="${esc(generatePassword())}" autocomplete="new-password"></label>
-    <div class="modal-actions"><button class="secondary-btn" id="tGenerate">Другой пароль</button><button class="secondary-btn" id="tCancel">Отмена</button><button class="primary-btn" id="tCreate">Создать</button></div>
+    ${passwordFieldHTML('tPassword', 'Пароль', 'text')}
+    <div class="modal-actions"><button class="secondary-btn" id="tGenerate">Другой пароль</button><button class="secondary-btn" id="tCancel">Отмена</button>${primaryButtonHTML('tCreate', 'Создать')}</div>
   `, root => {
     root.querySelector('#tName').focus();
     root.querySelector('#tGenerate').addEventListener('click', () => { root.querySelector('#tPassword').value = generatePassword(); });
@@ -1227,7 +1219,7 @@ function openTempAccountForm() {
       button.disabled = true;
       try {
         const data = await adminApi({ op: 'create_temp', name, password: root.querySelector('#tPassword').value });
-        openModal(`<div class="modal-label">ДОСТУП СОЗДАН</div><h2>${esc(data.account.name)}</h2><p class="modal-subtitle">Сохраните эти данные и передайте игроку.</p><div class="wallet"><strong>Имя: ${esc(data.account.name)}<br>Пароль: ${esc(data.account.password)}</strong></div><div class="modal-actions"><button class="primary-btn" id="tDone">Готово</button></div>`, done => done.querySelector('#tDone').addEventListener('click', closeModal));
+        openModal(`<div class="modal-label">ДОСТУП СОЗДАН</div><h2>${esc(data.account.name)}</h2><p class="modal-subtitle">Сохраните эти данные и передайте игроку.</p><div class="wallet"><strong>Имя: ${esc(data.account.name)}<br>Пароль: ${esc(data.account.password)}</strong></div><div class="modal-actions">${primaryButtonHTML('tDone', 'Готово')}</div>`, done => done.querySelector('#tDone').addEventListener('click', closeModal));
         loadAdminPlayers();
       } catch (error) {
         button.disabled = false;
@@ -1285,33 +1277,35 @@ function openPlayerPreview(player) {
   });
 }
 
-if (!adminPage) {
+function bindNavigation() {
   document.querySelector('#cabinetBack').addEventListener('click', () => setView('lobby'));
   new ResizeObserver(() => {
     fitHand();
     fitTable();
   }).observe(document.querySelector('#myHand'));
   document.querySelectorAll('.nav-item').forEach(item => {
-  item.addEventListener('click', () => {
-    const view = item.dataset.view;
-    if (view === 'lobby') {
-      setView('lobby');
-    } else if (view === 'mygames') {
-      restoreSavedRoom(readSeatRoom()).then(restored => {
-        if (restored) return;
-        openModal(`<div class="modal-label">МОИ ИГРЫ</div><h2>Активных игр нет</h2><p class="modal-subtitle">Создайте лобби или войдите по коду друга</p><button class="primary-btn full" id="mEmptyCreate">Создать лобби</button>`, root => {
-          root.querySelector('#mEmptyCreate').addEventListener('click', openCreateModal);
+    item.addEventListener('click', () => {
+      const view = item.dataset.view;
+      if (view === 'lobby') {
+        setView('lobby');
+      } else if (view === 'mygames') {
+        restoreSavedRoom(readSeatRoom()).then(restored => {
+          if (restored) return;
+          openModal(`<div class="modal-label">МОИ ИГРЫ</div><h2>Активных игр нет</h2><p class="modal-subtitle">Создайте лобби или войдите по коду друга</p>${primaryButtonHTML('mEmptyCreate', 'Создать лобби', true)}`, root => {
+            root.querySelector('#mEmptyCreate').addEventListener('click', openCreateModal);
+          });
         });
-      });
-    } else if (view === 'cabinet') {
-      renderCabinet();
-      setView('cabinet');
-    } else if (view === 'rules') {
-      openRulesModal();
-    }
-  });
+      } else if (view === 'cabinet') {
+        renderCabinet();
+        setView('cabinet');
+      } else if (view === 'rules') {
+        openRulesModal();
+      }
+    });
   });
 }
+
+if (!adminPage) bindNavigation();
 
 function setView(view) {
   state.view = view;
@@ -1429,7 +1423,7 @@ function roomSeq(roomId) {
       clearTimeout(timer);
       resolve(value);
     };
-    const timer = setTimeout(() => finish(null), 400);
+    const timer = setTimeout(() => finish(null), SEAT_SEQUENCE_WAIT_MS);
     const current = state.game && state.game.room && state.game.room.id === roomId ? Number(state.game.seq) || 0 : 0;
     if (current) finish(current);
     else if (state.source && state.source.readyState === EventSource.OPEN) finish(0);
@@ -1439,7 +1433,7 @@ function roomSeq(roomId) {
 }
 
 async function catchUpRoom(roomId, since) {
-  const params = new URLSearchParams({ id: clientId, token: sessionToken, since: String(since), until: 'any', timeout: '1500' });
+  const params = new URLSearchParams({ id: clientId, token: sessionToken, since: String(since), until: 'any', timeout: String(ROOM_WATCH_TIMEOUT_MS) });
   const response = await fetch(`/api/watch?${params}`);
   if (!response.ok) return;
   const data = await response.json();
@@ -1461,6 +1455,77 @@ window.addEventListener('pagehide', () => {
   if (state.source) state.source.close();
 });
 
+function isOlderRoomSnapshot(incoming, current) {
+  return incoming?.room && current?.room && incoming.room.id === current.room.id
+    && (Number(incoming.seq) || 0) < (Number(current.seq) || 0);
+}
+
+function applyGameEvent(game) {
+  const incomingSeq = Number(game && game.seq) || 0;
+  if (isOlderRoomSnapshot(game, state.game)) return;
+  if (state.leavingRoom) return;
+  state.game = game;
+  if (state.actionPending && incomingSeq > state.actionPendingSeq) {
+    state.actionPending = false;
+    state.actionPendingSeq = 0;
+    document.querySelector('#gameScreen').setAttribute('aria-busy', 'false');
+  }
+  if (state.autoOpen) {
+    state.autoOpen = false;
+    setView('game');
+  }
+  renderGame();
+  updateResumeButton();
+  if (state.view === 'game' && state.restoreJoin) {
+    const pending = state.restoreJoin;
+    state.restoreJoin = null;
+    pending.takeMissedEvents(incomingSeq);
+  }
+}
+
+async function handleRoomEvent(event) {
+  let payload;
+  try {
+    payload = JSON.parse(event.data);
+  } catch (error) {
+    return;
+  }
+  if (payload.type === 'lobby') {
+    state.lobby = payload;
+    renderLobby();
+  } else if (payload.type === 'account') {
+    state.account = payload.account;
+    renderProfile();
+    if (state.view === 'lobby') renderLobby();
+    if (state.view === 'cabinet') renderCabinet();
+  } else if (payload.type === 'game') {
+    applyGameEvent(payload.state);
+  } else if (payload.type === 'noroom' && payload.reason === 'auth') {
+    sessionStorage.removeItem('durak.client');
+    sessionStorage.removeItem('durak.token');
+    location.reload();
+  } else if (payload.type === 'noroom') {
+    if (state.leavingRoom) {
+      state.game = null;
+      state.restoreJoin = null;
+      forgetSeatRoom();
+      document.querySelector('#finishOverlay').classList.remove('open');
+      setView('lobby');
+      return;
+    }
+    if (state.game || state.restoreJoin) {
+      const restored = await restoreLeftSeat();
+      state.game = null;
+      state.restoreJoin = null;
+      document.querySelector('#finishOverlay').classList.remove('open');
+      if (document.querySelector('#confirmLeave')) closeModal();
+      if (!restored) setView('lobby');
+      updateResumeButton();
+      showAbandonedRoom(restored);
+    }
+  }
+}
+
 function connect() {
   if (!clientId || !sessionToken) return;
   if (state.source) state.source.close();
@@ -1472,67 +1537,7 @@ function connect() {
     document.querySelector('#connectionStatus').dataset.status = 'online';
     renderLobby();
   };
-  state.source.onmessage = async event => {
-    let payload;
-    try {
-      payload = JSON.parse(event.data);
-    } catch (error) {
-      return;
-    }
-    if (payload.type === 'lobby') {
-      state.lobby = payload;
-      renderLobby();
-    } else if (payload.type === 'account') {
-      state.account = payload.account;
-      renderProfile();
-      if (state.view === 'lobby') renderLobby();
-      if (state.view === 'cabinet') renderCabinet();
-    } else if (payload.type === 'game') {
-      const incomingSeq = Number(payload.state && payload.state.seq) || 0;
-      const currentSeq = Number(state.game && state.game.seq) || 0;
-      if (state.game && payload.state && payload.state.room && state.game.room && payload.state.room.id === state.game.room.id && incomingSeq < currentSeq) return;
-      if (state.leavingRoom) return;
-      state.game = payload.state;
-      if (state.actionPending && incomingSeq > state.actionPendingSeq) {
-        state.actionPending = false;
-        state.actionPendingSeq = 0;
-        document.querySelector('#gameScreen').setAttribute('aria-busy', 'false');
-      }
-      if (state.autoOpen) {
-        state.autoOpen = false;
-        setView('game');
-      }
-      renderGame();
-      updateResumeButton();
-      if (state.view === 'game' && state.restoreJoin) {
-        const pending = state.restoreJoin;
-        state.restoreJoin = null;
-        pending.takeMissedEvents(incomingSeq);
-      }    } else if (payload.type === 'noroom' && payload.reason === 'auth') {
-      sessionStorage.removeItem('durak.client');
-      sessionStorage.removeItem('durak.token');
-      location.reload();
-    } else if (payload.type === 'noroom') {
-      if (state.leavingRoom) {
-        state.game = null;
-        state.restoreJoin = null;
-        forgetSeatRoom();
-        document.querySelector('#finishOverlay').classList.remove('open');
-        setView('lobby');
-        return;
-      }
-      if (state.game || state.restoreJoin) {
-        const restored = await restoreLeftSeat();
-        state.game = null;
-        state.restoreJoin = null;
-        document.querySelector('#finishOverlay').classList.remove('open');
-        if (document.querySelector('#confirmLeave')) closeModal();
-        if (!restored) setView('lobby');
-        updateResumeButton();
-        showAbandonedRoom(restored);
-      }
-    }
-  };
+  state.source.onmessage = handleRoomEvent;
   state.source.onerror = () => {
     if (state.source.readyState === EventSource.CLOSED) {
       state.connected = false;
@@ -1585,9 +1590,21 @@ function cardCornersHTML(card, showSuit = false) {
   return `${corner}${cardBodyHTML(card)}<span class="card-corner bottom" aria-hidden="true">${esc(card.rank)}${faceRank ? `<i>${card.suit}</i>` : ''}</span>`;
 }
 
-function cardHTML(card, extraClass = '') {
+function cardHTML(card, extraClass = '', target = false) {
+  const attrs = target ? `data-target-card="${esc(card.id)}" ` : '';
   const red = card.suit === '♥' || card.suit === '♦';
-  return `<div class="card-face ${red ? 'red' : ''} ${extraClass}" data-card-id="${esc(card.id)}">${cardCornersHTML(card)}</div>`;
+  return `<div ${attrs}class="card-face ${red ? 'red' : ''} ${extraClass}" data-card-id="${esc(card.id)}">${cardCornersHTML(card)}</div>`;
+}
+
+function cardAriaLabel(card) {
+  const suits = { '♠': 'пик', '♣': 'треф', '♥': 'червей', '♦': 'бубен' };
+  const ranks = { 'В': 'валет', 'Д': 'дама', 'К': 'король', 'Т': 'туз' };
+  return `${ranks[card.rank] || card.rank} ${suits[card.suit] || card.suit}`;
+}
+
+function handCardHTML(card, dimmed) {
+  const red = card.suit === '♥' || card.suit === '♦';
+  return `<div class="hand-slot"><button class="hand-card ${red ? 'red' : ''} ${dimmed ? 'dim' : ''}" data-card="${esc(card.id)}">${cardCornersHTML(card)}</button></div>`;
 }
 
 function cardBackHTML(extraClass = '') {
@@ -1650,7 +1667,7 @@ function animateDeal(game, source, handRoot, seatRoot) {
   targets.set(game.you?.id, handRoot.querySelectorAll('.hand-card'));
   const handBounds = handRoot.getBoundingClientRect();
   let delay = 0;
-  for (let round = 0; round < 6; round += 1) {
+  for (let round = 0; round < INITIAL_HAND_SIZE; round += 1) {
     for (const player of game.players) {
       const card = targets.get(player.id)?.[round];
       if (!card) continue;
@@ -1825,6 +1842,123 @@ function startCardDrag(event, button) {
   window.addEventListener('blur', cancelCardDrag);
 }
 
+function gameTableMessage(game) {
+  const turnPlayer = game.players.find(player => player.id === game.turnId);
+  const defenderPlayer = game.players.find(player => player.role === 'defender');
+  const tableMessage = game.room.status === 'waiting'
+    ? 'Ожидаем игроков'
+    : game.room.status === 'playing' && turnPlayer
+      ? `${turnPlayer.name} ходит${defenderPlayer ? ` · ${defenderPlayer.name} защищается` : ''}`
+      : game.message;
+  return tableMessage;
+}
+
+function opponentSeats(game) {
+  const myIndex = game.players.findIndex(player => player.id === (game.you && game.you.id));
+  const seats = [];
+  const total = game.players.length;
+  for (let step = 1; step < total; step += 1) {
+    const index = myIndex === -1 ? step - 1 : (myIndex + step) % total;
+    seats.push(game.players[index]);
+  }
+  if (myIndex === -1) seats.push(game.players[0]);
+  return seats.slice(0, MAX_ROOM_PLAYERS - 1);
+}
+
+function handView(game) {
+  const hand = sortHand(game.hand || [], game.trump);
+  const ranksOnTable = new Set();
+  game.table.forEach(row => {
+    ranksOnTable.add(row.attack.rank);
+    if (row.defense) ranksOnTable.add(row.defense.rank);
+  });
+  const attacking = Boolean(game.canAttack);
+  const dimmed = card => {
+    if (!(game.you && game.you.turn)) return false;
+    if (attacking && game.table.length) return !ranksOnTable.has(card.rank);
+    return false;
+  };
+  const signature = `${game.room.id}:` + hand.map(card => `${card.id}${dimmed(card) ? '·' : ''}`).join(' ') + `|${game.trump || ''}|${game.you && game.you.turn ? 'turn' : 'idle'}|${game.you && game.you.role || ''}|${game.takePending ? 'take' : ''}`;
+  return { hand, dimmed, signature };
+}
+
+function renderTablePairs(rows) {
+  const table = document.querySelector('#tableCards');
+  table.querySelectorAll('.pair').forEach(pair => pair.remove());
+  table.insertAdjacentHTML('beforeend', rows.map((row, index) => `<div class="pair" data-pair="${index}" data-attack="${esc(row.attack.id)}">${cardHTML(row.attack, `attack ${row.defense ? '' : 'target'}`, true)}${row.defense ? cardHTML(row.defense, 'defense') : ''}</div>`).join(''));
+  table.querySelectorAll('.target').forEach(target => {
+    target.addEventListener('click', event => {
+      event.stopPropagation();
+      const cardId = document.querySelector('.hand-card:focus')?.dataset.card;
+      if (cardId) playCard(cardId, target.dataset.targetCard);
+    });
+  });
+  return table;
+}
+
+function opponentSeatHTML(player, game) {
+  const role = player.role === 'attacker' ? 'attacker' : player.role === 'defender' ? 'defender' : '';
+  const status = player.left ? 'Ушёл' : player.finished ? 'Закончил' : !player.connected ? 'Не в сети' : '';
+  const roleLabel = role === 'attacker' ? 'Атакует' : role === 'defender' ? 'Защищается' : '';
+  const turnLabel = player.id === game.turnId ? ' · Ходит' : '';
+  const cardsLabel = game.room.status === 'waiting' ? '' : `, ${Number(player.cards)} ${cardsWord(player.cards)}`;
+  const cardsHTML = game.room.status === 'waiting' ? '' : `<span class="seat-cards"><span class="opponent-fan" aria-hidden="true">${Array.from({ length: Number(player.cards) || 0 }, (_, cardIndex) => `<i style="--fan-index:${cardIndex};--fan-count:${Number(player.cards) || 0}">${cardBackHTML()}</i>`).join('')}</span><b aria-hidden="true">${Number(player.cards)}</b>${roleLabel ? `<span class="role-label ${role}">${roleIcon(role)}${roleLabel}${turnLabel}</span>` : ''}</span>`;
+  return `<button class="seat ${player.id === game.turnId ? 'turn' : ''}" data-seat="${esc(player.id)}" type="button" aria-haspopup="dialog" aria-label="Профиль игрока ${esc(player.name)}${cardsLabel}${roleLabel ? `, ${roleLabel}` : status ? `, ${status}` : ''}">
+      ${avatarHTML(player)}
+      <span class="seat-main"><strong>${esc(player.name)}</strong>${status ? `<span class="seat-state">${status}</span>` : ''}</span>
+      ${cardsHTML.replace(roleLabel ? `>${roleIcon(role)}${roleLabel}</span>` : '', roleLabel ? `>${roleIcon(role)}${roleLabel}${turnLabel}</span>` : '')}
+    </button>`;
+}
+
+function renderOpponentSeats(game) {
+  const seats = opponentSeats(game);
+  const seatRoot = document.querySelector('#seats');
+  const focusedSeat = document.activeElement?.dataset.seat;
+  const previewSeat = modalTrigger?.dataset.seat;
+  seatRoot.innerHTML = seats.map(player => opponentSeatHTML(player, game)).join('');
+  seatRoot.querySelectorAll('.seat').forEach(seat => {
+    if (seat.dataset.seat === focusedSeat) seat.focus({ preventScroll: true });
+    if (seat.dataset.seat === previewSeat) modalTrigger = seat;
+    seat.addEventListener('click', () => {
+      const player = state.game?.players.find(item => item.id === seat.dataset.seat);
+      if (player) openPlayerPreview(player);
+    });
+  });
+  return seatRoot;
+}
+
+function renderHand(game, previousHand, animateNewCards) {
+  const { hand, dimmed, signature: handSignature } = handView(game);
+  const handRoot = document.querySelector('#myHand');
+  if (handRoot.dataset.signature !== handSignature) {
+    cancelCardDrag();
+    const focusedCard = handRoot.contains(document.activeElement) ? document.activeElement.dataset.card : null;
+    handRoot.dataset.signature = handSignature;
+    handRoot.innerHTML = hand.map(card => handCardHTML(card, dimmed(card))).join('');
+    handRoot.querySelectorAll('.hand-card').forEach((button, index) => {
+      const card = hand[index];
+      button.setAttribute('aria-label', cardAriaLabel(card));
+      if (!previousHand.has(button.dataset.card) && animateNewCards) {
+        button.animate([{ opacity: 0, transform: 'translateY(18px)' }, { opacity: 1, transform: 'translateY(0)' }], { duration: 380, delay: Math.min(index * 35, 210), easing: 'cubic-bezier(.22,1,.36,1)', fill: 'backwards' });
+      }
+      button.draggable = false;
+      button.addEventListener('pointerdown', event => startCardDrag(event, button));
+      button.addEventListener('click', () => {
+        if (state.suppressClick) {
+          state.suppressClick = false;
+          return;
+        }
+        playCard(button.dataset.card);
+      });
+    });
+    if (focusedCard) {
+      const replacement = [...handRoot.querySelectorAll('.hand-card')].find(button => button.dataset.card === focusedCard);
+      if (replacement) replacement.focus();
+    }
+  }
+  return handRoot;
+}
+
 function renderGame() {
   const game = state.game;
   if (!game) return;
@@ -1871,105 +2005,10 @@ function renderGame() {
   deckBox.classList.toggle('empty', !game.deck);
   deckBox.style.setProperty('--depth', String(Math.max(2, Math.min(7, Math.round(game.deck / 4) + 1))));
   document.querySelector('#deckCount').textContent = game.deck;
-  const table = document.querySelector('#tableCards');
-  table.querySelectorAll('.pair').forEach(pair => pair.remove());
-  table.insertAdjacentHTML('beforeend', game.table.map((row, index) => `<div class="pair" data-pair="${index}" data-attack="${esc(row.attack.id)}">${cardHTML(row.attack, `attack ${row.defense ? '' : 'target'}`).replace('<div ', `<div data-target-card="${esc(row.attack.id)}" `)}${row.defense ? cardHTML(row.defense, 'defense') : ''}</div>`).join(''));
-  table.querySelectorAll('.target').forEach(target => {
-    target.addEventListener('click', event => {
-      event.stopPropagation();
-      const cardId = document.querySelector('.hand-card:focus')?.dataset.card;
-      if (cardId) playCard(cardId, target.dataset.targetCard);
-    });
-  });
-
-  const turnPlayer = game.players.find(player => player.id === game.turnId);
-  const defenderPlayer = game.players.find(player => player.role === 'defender');
-  const tableMessage = game.room.status === 'waiting'
-    ? 'Ожидаем игроков'
-    : game.room.status === 'playing' && turnPlayer
-      ? `${turnPlayer.name} ходит${defenderPlayer ? ` · ${defenderPlayer.name} защищается` : ''}`
-      : game.message;
-  document.querySelector('#tableMessage').textContent = tableMessage;
-
-  const myIndex = game.players.findIndex(player => player.id === (game.you && game.you.id));
-  const seats = [];
-  const total = game.players.length;
-  for (let step = 1; step < total; step += 1) {
-    const index = myIndex === -1 ? step - 1 : (myIndex + step) % total;
-    seats.push(game.players[index]);
-  }
-  if (myIndex === -1) seats.push(game.players[0]);
-  const seatRoot = document.querySelector('#seats');
-  const focusedSeat = document.activeElement?.dataset.seat;
-  const previewSeat = modalTrigger?.dataset.seat;
-  seatRoot.innerHTML = seats.slice(0, 5).map(player => {
-    const role = player.role === 'attacker' ? 'attacker' : player.role === 'defender' ? 'defender' : '';
-    const status = player.left ? 'Ушёл' : player.finished ? 'Закончил' : !player.connected ? 'Не в сети' : '';
-    const roleLabel = role === 'attacker' ? 'Атакует' : role === 'defender' ? 'Защищается' : '';
-    const turnLabel = player.id === game.turnId ? ' · Ходит' : '';
-    const cardsLabel = game.room.status === 'waiting' ? '' : `, ${Number(player.cards)} ${cardsWord(player.cards)}`;
-    const cardsHTML = game.room.status === 'waiting' ? '' : `<span class="seat-cards"><span class="opponent-fan" aria-hidden="true">${Array.from({ length: Number(player.cards) || 0 }, (_, cardIndex) => `<i style="--fan-index:${cardIndex};--fan-count:${Number(player.cards) || 0}">${cardBackHTML()}</i>`).join('')}</span><b aria-hidden="true">${Number(player.cards)}</b>${roleLabel ? `<span class="role-label ${role}">${roleIcon(role)}${roleLabel}${turnLabel}</span>` : ''}</span>`;
-    return `<button class="seat ${player.id === game.turnId ? 'turn' : ''}" data-seat="${esc(player.id)}" type="button" aria-haspopup="dialog" aria-label="Профиль игрока ${esc(player.name)}${cardsLabel}${roleLabel ? `, ${roleLabel}` : status ? `, ${status}` : ''}">
-      ${avatarHTML(player)}
-      <span class="seat-main"><strong>${esc(player.name)}</strong>${status ? `<span class="seat-state">${status}</span>` : ''}</span>
-      ${cardsHTML.replace(roleLabel ? `>${roleIcon(role)}${roleLabel}</span>` : '', roleLabel ? `>${roleIcon(role)}${roleLabel}${turnLabel}</span>` : '')}
-    </button>`;
-  }).join('');
-  seatRoot.querySelectorAll('.seat').forEach(seat => {
-    if (seat.dataset.seat === focusedSeat) seat.focus({ preventScroll: true });
-    if (seat.dataset.seat === previewSeat) modalTrigger = seat;
-    seat.addEventListener('click', () => {
-      const player = state.game?.players.find(item => item.id === seat.dataset.seat);
-      if (player) openPlayerPreview(player);
-    });
-  });
-
-
-  const hand = sortHand(game.hand || [], game.trump);
-  const ranksOnTable = new Set();
-  game.table.forEach(row => {
-    ranksOnTable.add(row.attack.rank);
-    if (row.defense) ranksOnTable.add(row.defense.rank);
-  });
-  const attacking = Boolean(game.canAttack);
-  const dimmed = card => {
-    if (!(game.you && game.you.turn)) return false;
-    if (attacking && game.table.length) return !ranksOnTable.has(card.rank);
-    return false;
-  };
-  const handRoot = document.querySelector('#myHand');
-  const handSignature = `${game.room.id}:` + hand.map(card => `${card.id}${dimmed(card) ? '·' : ''}`).join(' ') + `|${game.trump || ''}|${game.you && game.you.turn ? 'turn' : 'idle'}|${game.you && game.you.role || ''}|${game.takePending ? 'take' : ''}`;
-  if (handRoot.dataset.signature !== handSignature) {
-    cancelCardDrag();
-    const focusedCard = handRoot.contains(document.activeElement) ? document.activeElement.dataset.card : null;
-    handRoot.dataset.signature = handSignature;
-    handRoot.innerHTML = hand.map(card => {
-      const red = card.suit === '♥' || card.suit === '♦';
-      return `<div class="hand-slot"><button class="hand-card ${red ? 'red' : ''} ${dimmed(card) ? 'dim' : ''}" data-card="${esc(card.id)}">${cardCornersHTML(card)}</button></div>`;
-    }).join('');
-    handRoot.querySelectorAll('.hand-card').forEach((button, index) => {
-      const card = hand[index];
-      const suits = { '♠': 'пик', '♣': 'треф', '♥': 'червей', '♦': 'бубен' };
-      const ranks = { 'В': 'валет', 'Д': 'дама', 'К': 'король', 'Т': 'туз' };
-      button.setAttribute('aria-label', `${ranks[card.rank] || card.rank} ${suits[card.suit] || card.suit}`);
-      if (!previousHand.has(button.dataset.card) && motion && !roundEnded && !dealing) {
-        button.animate([{ opacity: 0, transform: 'translateY(18px)' }, { opacity: 1, transform: 'translateY(0)' }], { duration: 380, delay: Math.min(index * 35, 210), easing: 'cubic-bezier(.22,1,.36,1)', fill: 'backwards' });
-      }
-      button.draggable = false;
-      button.addEventListener('pointerdown', event => startCardDrag(event, button));
-      button.addEventListener('click', () => {
-        if (state.suppressClick) {
-          state.suppressClick = false;
-          return;
-        }
-        playCard(button.dataset.card);
-      });
-    });
-    if (focusedCard) {
-      const replacement = [...handRoot.querySelectorAll('.hand-card')].find(button => button.dataset.card === focusedCard);
-      if (replacement) replacement.focus();
-    }
-  }
+  const table = renderTablePairs(game.table);
+  document.querySelector('#tableMessage').textContent = gameTableMessage(game);
+  const seatRoot = renderOpponentSeats(game);
+  const handRoot = renderHand(game, previousHand, motion && !roundEnded && !dealing);
 
   fitHand();
   fitTable();
@@ -2051,10 +2090,9 @@ window.addEventListener('resize', () => {
   fitTable();
 });
 
-function renderActions(game) {
-  const actions = document.querySelector('#gameActions');
+function gameActionButtons(game, actionPending) {
   const buttons = [];
-  if (game.room.status === 'playing' && !state.actionPending) {
+  if (game.room.status === 'playing' && !actionPending) {
     if (game.canTake) buttons.push({ label: game.takePending ? 'Забрать карты' : 'Взять карты', action: 'take', style: game.takePending ? 'primary-btn' : 'secondary-btn' });
     if (game.canPass) buttons.push({ label: game.takePending ? 'Хватит, забирайте' : 'Бито', action: 'pass', style: 'primary-btn' });
 
@@ -2063,10 +2101,16 @@ function renderActions(game) {
     else if (game.room.status === 'waiting') {
       const isHost = Boolean(game.you && game.you.id === game.room.hostId);
       const connected = game.players.filter(player => player.connected).length;
-      buttons.push({ label: isHost ? `Ждём игроков (${connected}/6)` : 'Ждём, пока создатель начнёт игру', action: null, style: 'secondary-btn', disabled: true });
+      buttons.push({ label: isHost ? `Ждём игроков (${connected}/${MAX_ROOM_PLAYERS})` : 'Ждём, пока создатель начнёт игру', action: null, style: 'secondary-btn', disabled: true });
     }
 
   }
+  return buttons;
+}
+
+function renderActions(game) {
+  const actions = document.querySelector('#gameActions');
+  const buttons = gameActionButtons(game, state.actionPending);
   const signature = JSON.stringify(buttons);
   if (actions.dataset.signature === signature) return;
   actions.dataset.signature = signature;
@@ -2074,27 +2118,7 @@ function renderActions(game) {
   actions.querySelectorAll('button[data-action]').forEach(element => {
     const action = element.dataset.action;
     if (!action) return;
-    element.addEventListener('click', () => {
-      if (action === 'copy') return copyInvite();
-      if (action === 'transfer') return toast('Перетащите карту нужного достоинства на стол');
-      act(action);
-    });
-  });
-}
-
-function selectTransferCard() {
-  const game = state.game;
-  if (!game || !game.canTransfer || !game.table.length) return;
-  const rank = game.table[0].attack.rank;
-  const cards = game.hand.filter(card => card.rank === rank);
-  openModal(`<h2>Перевести ход</h2><p>Выберите карту для перевода.</p><div class="modal-actions">${cards.map(card => `<button class="secondary-btn" data-transfer-card="${esc(card.id)}">${esc(card.rank + card.suit)}</button>`).join('')}</div>`, () => {
-    document.querySelectorAll('[data-transfer-card]').forEach(button => {
-      button.addEventListener('click', () => {
-        const cardId = button.dataset.transferCard;
-        closeModal();
-        act('transfer', cardId);
-      });
-    });
+    element.addEventListener('click', () => act(action));
   });
 }
 
@@ -2104,49 +2128,52 @@ function beats(attack, defense, trump) {
 }
 
 function cardsWord(count) {
-  const mod10 = count % 10;
-  const mod100 = count % 100;
-  if (mod10 === 1 && mod100 !== 11) return 'карта';
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'карты';
-  return 'карт';
+  return wordForm(count, ['карта', 'карты', 'карт']);
 }
 
-async function playCard(cardId, targetCardId = null) {
-  const game = state.game;
+function cardMove(game, cardId, targetCardId) {
   if (!game || !game.you) return;
+  const moveError = message => ({ message });
   const card = (game.hand || []).find(item => item.id === cardId);
   if (!card) return;
   if (game.you.role !== 'defender' && !game.you.finished) {
     if (!game.canAttack) {
       const defender = game.players.find(player => player.role === 'defender');
       const openRows = game.table.filter(row => !row.defense).length;
-      if (game.table.length >= 6) return toast('На столе уже шесть пар — больше не подкинуть');
+      if (game.table.length >= MAX_TABLE_PAIRS) return moveError('На столе уже шесть пар — больше не подкинуть');
       if (defender && defender.cards <= openRows) {
-        return toast(`Сопернику нечем отбиваться: у него ${defender.cards} ${cardsWord(defender.cards)} — больше не подкинуть`);
+        return moveError(`Сопернику нечем отбиваться: у него ${defender.cards} ${cardsWord(defender.cards)} — больше не подкинуть`);
       }
-      return toast('Сейчас подкидывать нечем');
+      return moveError('Сейчас подкидывать нечем');
     }
     if (game.table.length && !game.table.some(row => row.attack.rank === card.rank || (row.defense && row.defense.rank === card.rank))) {
-      return toast(`Можно подкидывать только ${[...new Set(game.table.flatMap(row => [row.attack.rank, row.defense ? row.defense.rank : row.attack.rank]))].join(', ')}`);
+      return moveError(`Можно подкидывать только ${[...new Set(game.table.flatMap(row => [row.attack.rank, row.defense ? row.defense.rank : row.attack.rank]))].join(', ')}`);
     }
-    return act('attack', cardId);
+    return { args: ['attack', cardId] };
   }
   if (game.you.role === 'defender') {
     if (!targetCardId && canTransferCard(game, card)) {
-      return act('transfer', cardId);
+      return { args: ['transfer', cardId] };
     }
-    if (game.takePending) return toast('Вы уже решили взять карты');
-    if (!game.canDefend) return toast('Сейчас отбивать нечего');
+    if (game.takePending) return moveError('Вы уже решили взять карты');
+    if (!game.canDefend) return moveError('Сейчас отбивать нечего');
     const row = targetCardId
       ? game.table.find(item => !item.defense && item.attack.id === targetCardId)
       : game.table.find(item => !item.defense && beats(item.attack, card, game.trump)) || game.table.find(item => !item.defense);
-    if (!row) return toast('Сейчас отбивать нечего');
+    if (!row) return moveError('Сейчас отбивать нечего');
     if (!beats(row.attack, card, game.trump)) {
-      return toast(`Карта ${card.rank}${card.suit} не бьёт ${row.attack.rank}${row.attack.suit}`);
+      return moveError(`Карта ${card.rank}${card.suit} не бьёт ${row.attack.rank}${row.attack.suit}`);
     }
-    return act('defend', cardId, row.attack.id);
+    return { args: ['defend', cardId, row.attack.id] };
   }
-  toast('Сейчас ходит другой игрок');
+  return moveError('Сейчас ходит другой игрок');
+}
+
+async function playCard(cardId, targetCardId = null) {
+  const move = cardMove(state.game, cardId, targetCardId);
+  if (!move) return;
+  if (move.args) return act(...move.args);
+  return toast(move.message);
 }
 
 async function act(action, cardId, targetCardId = null) {

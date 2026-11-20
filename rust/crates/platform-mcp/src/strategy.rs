@@ -29,6 +29,16 @@ pub fn parse_card(id: &str) -> Option<Value> {
     Some(json!({"id":id,"rank":rank,"suit":suit}))
 }
 
+pub fn beats(attack: &Value, defense: &Value, trump: &str) -> bool {
+    if attack.is_null() || defense.is_null() {
+        return false;
+    }
+    if attack["suit"] == defense["suit"] {
+        return rank_of(defense) > rank_of(attack);
+    }
+    defense["suit"] == trump && attack["suit"] != trump
+}
+
 fn rank_of(c: &Value) -> usize {
     c["rank"].as_str().and_then(value).unwrap_or(0)
 }
@@ -95,9 +105,7 @@ pub fn defense_options(st: &Value) -> Vec<(Value, Value)> {
         }
         let attack = &row["attack"];
         for c in hand(st) {
-            let same_suit_beats = attack["suit"] == c["suit"] && rank_of(&c) > rank_of(attack);
-            let trump_beats = is_trump(&c, st) && !is_trump(attack, st);
-            if same_suit_beats || trump_beats {
+            if beats(attack, &c, st["trump"].as_str().unwrap_or("")) {
                 options.push((row.clone(), c));
             }
         }
@@ -130,7 +138,7 @@ pub fn dump_options(st: &Value) -> Vec<Value> {
         .filter(|c| ranks.iter().any(|r| Some(r.as_str()) == c["rank"].as_str()))
         .filter(|c| !is_trump(c, st))
         .collect();
-    cards.sort_by_key(|c| rank_of(c));
+    cards.sort_by_key(rank_of);
     cards
 }
 
@@ -141,8 +149,8 @@ pub fn attack_choices(st: &Value) -> Vec<Value> {
     }
     let mut plain: Vec<Value> = cards.iter().filter(|c| !is_trump(c, st)).cloned().collect();
     let mut trumps: Vec<Value> = cards.iter().filter(|c| is_trump(c, st)).cloned().collect();
-    plain.sort_by_key(|c| rank_of(c));
-    trumps.sort_by_key(|c| rank_of(c));
+    plain.sort_by_key(rank_of);
+    trumps.sort_by_key(rank_of);
     if table(st).is_empty() {
         plain.extend(trumps);
         return plain;
@@ -165,24 +173,13 @@ pub fn attack_choices(st: &Value) -> Vec<Value> {
     vec![]
 }
 
+#[derive(Default)]
 pub struct Ledger {
     room_id: Option<String>,
     seen: HashSet<String>,
     dead: HashSet<String>,
     pending: Vec<(Value, Option<Value>)>,
     last_seq: u64,
-}
-
-impl Default for Ledger {
-    fn default() -> Self {
-        Self {
-            room_id: None,
-            seen: HashSet::new(),
-            dead: HashSet::new(),
-            pending: Vec::new(),
-            last_seq: 0,
-        }
-    }
 }
 
 impl Ledger {
@@ -450,206 +447,4 @@ pub fn choose_move(st: &Value, ledger: Option<&Ledger>) -> Option<Value> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn card(id: &str) -> Value {
-        parse_card(id).unwrap()
-    }
-
-    fn base() -> Value {
-        json!({
-            "room":{"id":"R","status":"playing","deckSize":36,"mode":"classic","bet":0},
-            "you":{"id":"me","role":"attacker","finished":false,"left":false,"hand":[]},
-            "hand":[],
-            "players":[
-                {"id":"me","name":"Я","cards":2,"role":"attacker"},
-                {"id":"op","name":"Оп","cards":6,"role":"defender"}
-            ],
-            "attackerId":"me",
-            "defenderId":"op",
-            "trump":"♠",
-            "deck":24,
-            "table":[],
-            "canAttack":false,
-            "canDefend":false,
-            "canTransfer":false,
-            "canPass":false,
-            "canTake":false,
-            "takePending":false,
-            "log":[]
-        })
-    }
-
-    fn with_hand(st: &mut Value, cards: &[&str]) {
-        let hand: Vec<Value> = cards.iter().map(|id| card(id)).collect();
-        st["hand"] = json!(hand);
-        st["you"]["hand"] = json!(hand);
-    }
-
-    #[test]
-    fn card_order_and_trump() {
-        assert_eq!(value("Т"), Some(12));
-        assert_eq!(value("6"), Some(4));
-        assert_eq!(card_text(&card("Т♠")), "Т♠");
-        assert_eq!(parse_card("ZZ"), None);
-    }
-
-    #[test]
-    fn attack_options_match_table_ranks() {
-        let mut st = base();
-        with_hand(&mut st, &["6♥", "7♦", "8♣"]);
-        st["canAttack"] = json!(true);
-        st["table"] = json!([{"attack":card("6♦"),"defense":null}]);
-        let ids: Vec<String> = attach_options(&st)
-            .iter()
-            .map(|c| c["id"].as_str().unwrap_or("").to_string())
-            .collect();
-        assert_eq!(ids, vec!["6♥".to_string()]);
-    }
-
-    #[test]
-    fn trumps_are_held_back_mid_deck() {
-        let mut st = base();
-        with_hand(&mut st, &["6♥", "6♠"]);
-        st["canAttack"] = json!(true);
-        st["table"] = json!([{"attack":card("6♦"),"defense":null}]);
-        let ids: Vec<String> = attack_choices(&st)
-            .iter()
-            .map(|c| c["id"].as_str().unwrap_or("").to_string())
-            .collect();
-        assert_eq!(ids, vec!["6♥".to_string()]);
-        with_hand(&mut st, &["6♠"]);
-        st["deck"] = json!(0);
-        let ids: Vec<String> = attack_choices(&st)
-            .iter()
-            .map(|c| c["id"].as_str().unwrap_or("").to_string())
-            .collect();
-        assert_eq!(ids, vec!["6♠".to_string()]);
-        st["deck"] = json!(24);
-        assert!(attack_choices(&st).is_empty());
-    }
-
-    #[test]
-    fn defense_prefers_cheap_non_trump() {
-        let mut st = base();
-        with_hand(&mut st, &["7♥", "8♥", "7♠"]);
-        st["canDefend"] = json!(true);
-        st["canTake"] = json!(true);
-        st["you"]["id"] = json!("me");
-        st["attackerId"] = json!("op");
-        st["defenderId"] = json!("me");
-        st["table"] = json!([{"attack":card("6♥"),"defense":null}]);
-        let chosen = choose_move(&st, None).unwrap();
-        assert_eq!(chosen["action"], "defend");
-        assert_eq!(chosen["cardId"], "7♥");
-        assert_eq!(chosen["targetCardId"], "6♥");
-    }
-
-    #[test]
-    fn last_trump_is_saved_until_the_deck_empties() {
-        let mut st = base();
-        with_hand(&mut st, &["6♠"]);
-        st["canDefend"] = json!(true);
-        st["canTake"] = json!(true);
-        st["attackerId"] = json!("op");
-        st["defenderId"] = json!("me");
-        st["table"] = json!([{"attack":card("Т♥"),"defense":null}]);
-        assert_eq!(choose_move(&st, None).unwrap()["action"], "take");
-        st["deck"] = json!(0);
-        assert_eq!(choose_move(&st, None).unwrap()["action"], "defend");
-    }
-
-    #[test]
-    fn transfer_wins_when_defense_is_impossible() {
-        let mut st = base();
-        with_hand(&mut st, &["9♦", "Т♥"]);
-        st["room"]["mode"] = json!("transfer");
-        st["canTransfer"] = json!(true);
-        st["canTake"] = json!(true);
-        st["attackerId"] = json!("op");
-        st["defenderId"] = json!("me");
-        st["table"] = json!([{"attack":card("9♥"),"defense":null}]);
-        assert_eq!(transfer_options(&st).len(), 1);
-        let chosen = choose_move(&st, None).unwrap();
-        assert_eq!(chosen["action"], "transfer");
-        assert_eq!(chosen["cardId"], "9♦");
-    }
-
-    #[test]
-    fn dump_card_when_the_defender_takes() {
-        let mut st = base();
-        with_hand(&mut st, &["9♦", "9♠"]);
-        st["canAttack"] = json!(true);
-        st["canPass"] = json!(true);
-        st["takePending"] = json!(true);
-        st["table"] = json!([{"attack":card("9♥"),"defense":null}]);
-        let dumps: Vec<String> = dump_options(&st)
-            .iter()
-            .map(|c| c["id"].as_str().unwrap_or("").to_string())
-            .collect();
-        assert_eq!(dumps, vec!["9♦".to_string()]);
-        let chosen = choose_move(&st, None).unwrap();
-        assert_eq!(chosen["action"], "attack");
-        assert_eq!(chosen["cardId"], "9♦");
-    }
-
-    #[test]
-    fn defender_does_nothing_while_taking() {
-        let mut st = base();
-        with_hand(&mut st, &["9♦"]);
-        st["takePending"] = json!(true);
-        st["attackerId"] = json!("op");
-        st["defenderId"] = json!("me");
-        st["table"] = json!([{"attack":card("9♥"),"defense":null}]);
-        assert!(choose_move(&st, None).is_none());
-    }
-
-    #[test]
-    fn ledger_counts_hidden_cards() {
-        let mut st = base();
-        with_hand(&mut st, &["6♥", "7♥", "8♥", "9♥", "10♥", "В♥"]);
-        st["trumpCard"] = json!(card("6♠"));
-        let mut ledger = Ledger::default();
-        ledger.observe(&st);
-        let summary = ledger.summary(&st);
-        assert_eq!(summary["unseen"], json!(29));
-        assert_eq!(summary["trumps"], json!(8));
-    }
-
-    #[test]
-    fn ledger_marks_a_beaten_table_as_out_of_play() {
-        let mut st = base();
-        with_hand(&mut st, &["6♥"]);
-        st["table"] = json!([{"attack":card("6♦"),"defense":card("7♦")}]);
-        st["log"] = json!([
-            {"seq":1,"action":"attack","cardId":"6♦"},
-            {"seq":2,"action":"defend","cardId":"7♦","targetCardId":"6♦"}
-        ]);
-        let mut ledger = Ledger::default();
-        ledger.observe(&st);
-        st["table"] = json!([]);
-        st["log"] = json!([
-            {"seq":1,"action":"attack","cardId":"6♦"},
-            {"seq":2,"action":"defend","cardId":"7♦","targetCardId":"6♦"},
-            {"seq":3,"action":"pass"}
-        ]);
-        ledger.observe(&st);
-        assert_eq!(ledger.summary(&st)["out"], json!(2));
-    }
-
-    #[test]
-    fn ledger_resets_for_a_new_room() {
-        let mut st = base();
-        with_hand(&mut st, &["6♥"]);
-        let mut ledger = Ledger::default();
-        ledger.observe(&st);
-        let mut other = base();
-        other["room"]["id"] = json!("OTHER");
-        other["room"]["deckSize"] = json!(52);
-        with_hand(&mut other, &["6♥"]);
-        other["trumpCard"] = json!(card("7♣"));
-        ledger.observe(&other);
-        assert_eq!(ledger.summary(&other)["unseen"], json!(50));
-    }
-}
+mod tests;

@@ -100,14 +100,21 @@ impl Config {
         }))
     }
 }
-pub(crate) fn random() -> Result<String, Response> {
-    let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes).map_err(|_| {
+#[derive(Debug)]
+pub(crate) struct RandomUnavailable;
+
+impl IntoResponse for RandomUnavailable {
+    fn into_response(self) -> Response {
         error(
             StatusCode::SERVICE_UNAVAILABLE,
             "Источник случайных чисел недоступен",
         )
-    })?;
+    }
+}
+
+pub(crate) fn random() -> Result<String, RandomUnavailable> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(|_| RandomUnavailable)?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 pub(crate) fn digest(s: &str) -> String {
@@ -336,11 +343,10 @@ pub async fn complete(State(state): State<AppState>, Json(body): Json<Completion
     drop(repository_guard);
     sessions.insert(id.clone(), token.clone());
     if let Some(previous) = state.clients.write().await.remove(&id) {
-        let _ = previous
-            .sender
-            .try_send(Ok(axum::response::sse::Event::default().data(
-                json!({"type":"revoked","reason":"session_rotated"}).to_string(),
-            )));
+        previous.send(
+            axum::response::sse::Event::default()
+                .data(json!({"type":"revoked","reason":"session_rotated"}).to_string()),
+        );
     }
     (
         [(axum::http::header::CACHE_CONTROL, "no-store")],

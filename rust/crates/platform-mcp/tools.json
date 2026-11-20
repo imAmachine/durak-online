@@ -1,7 +1,7 @@
 [
   {
     "name": "durak_connect",
-    "description": "Открыть SSE для сессии Discord из DURAK_DISCORD_CLIENT_ID и DURAK_DISCORD_TOKEN или DURAK_DISCORD_ACCOUNTS.",
+    "description": "Открыть место по готовой сессии, клубному login/password или создать временный аккаунт ключом администратора; также поддерживаются DURAK_DISCORD_* и DURAK_DISCORD_ACCOUNTS.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -12,6 +12,30 @@
         "name": {
           "type": "string",
           "description": "Имя игрока (до 20 символов)."
+        },
+        "clientId": {
+          "type": "string",
+          "description": "ID готовой сессии."
+        },
+        "token": {
+          "type": "string",
+          "description": "Токен готовой сессии."
+        },
+        "login": {
+          "type": "string",
+          "description": "Имя клубного аккаунта; либо DURAK_LOGIN."
+        },
+        "password": {
+          "type": "string",
+          "description": "Пароль клубного аккаунта; либо DURAK_PASSWORD."
+        },
+        "create": {
+          "type": "boolean",
+          "description": "Создать временный аккаунт ключом администратора."
+        },
+        "key": {
+          "type": "string",
+          "description": "Ключ администратора."
         }
       }
     }
@@ -322,6 +346,10 @@
         "seat": {
           "type": "string",
           "description": "Метка места из durak_connect (например p1). Можно не указывать, если место одно."
+        },
+        "verbose": {
+          "type": "boolean",
+          "description": "Полный JSON-снимок в ответе (по умолчанию краткий отчёт)."
         }
       }
     }
@@ -404,13 +432,25 @@
   },
   {
     "name": "durak_autoplay",
-    "description": "Играет партию с отдельными сессиями auto1...autoN из DURAK_DISCORD_ACCOUNTS.",
+    "description": "Играет партию с отдельными сессиями из credentials или auto1...autoN в DURAK_DISCORD_ACCOUNTS.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "seats": {
           "type": "integer",
           "description": "Количество мест, от 2 до 6."
+        },
+        "credentials": {
+          "type": "array",
+          "description": "Отдельные сессии для каждого игрока.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "clientId": { "type": "string" },
+              "token": { "type": "string" }
+            },
+            "required": ["clientId", "token"]
+          }
         },
         "mode": {
           "type": "string",

@@ -7,8 +7,13 @@ durak_url="${DURAK_URL:-http://127.0.0.1:4173}"
 durak_key="${DURAK_ADMIN_KEY:-${ADMIN_KEY:-}}"
 
 mcp add durak \
-  --command node \
-  --args "$PWD/mcp/server.mjs" \
+  --command cargo \
+  --args run \
+  --args --manifest-path \
+  --args "$PWD/rust/Cargo.toml" \
+  --args -p \
+  --args platform-mcp \
+  --args --locked \
   --env DURAK_URL "$durak_url" \
   --env DURAK_ADMIN_KEY "$durak_key" \
   --timeout 300
