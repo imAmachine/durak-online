@@ -291,13 +291,16 @@
 .deck.empty .deck-trump .card-face { opacity: .9; }
 
 .deck-count {
-  position: relative;
-  align-self: center;
-  margin-top: calc(var(--card-w) * .18);
+  position: absolute;
+  top: calc(var(--deck-h) + var(--deck-base-offset) + var(--card-w) * .06);
+  left: 50%;
+  margin: 0;
   color: rgba(232, 234, 217, .62);
   font: 500 max(10px, calc(var(--card-w) * .1))/1 var(--font-sans);
   letter-spacing: .12em;
   text-transform: uppercase;
+  transform: translateX(-50%);
+  white-space: nowrap;
 }
 
 .table-cards {
