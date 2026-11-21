@@ -219,7 +219,7 @@
 
 .main-content {
   width: min(100%, 1680px);
-  padding: 0 clamp(24px, 4.4vw, 88px) 96px;
+  padding: clamp(34px, 4.4vw, 62px) clamp(24px, 4.4vw, 88px) 96px;
   margin: 0 auto;
   outline: none;
 }
@@ -232,6 +232,8 @@
   justify-content: space-between;
   gap: 24px;
 }
+
+.topbar { justify-content: flex-end; }
 
 .eyebrow, .tag, .modal-label, .hero-kicker {
   margin: 0 0 12px;
