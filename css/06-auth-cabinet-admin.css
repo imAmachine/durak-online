@@ -205,3 +205,14 @@ body[data-admin="page"] { min-height: 100vh; }
   .admin-sort select { width: 100%; }
   .admin-row-side { max-width: 42%; }
 }
+
+@media (max-width: 360px) {
+  .cab-hero { gap: 12px; padding: 18px; }
+  .cab-identity { flex-basis: calc(100% - 76px); }
+  .cab-identity h1 { overflow-wrap: anywhere; font-size: 30px; }
+  .cab-balance strong { max-width: 100%; overflow-wrap: anywhere; font-size: 34px; }
+  .cab-stats { grid-template-columns: 1fr; }
+  .cab-stats span { letter-spacing: .1em; }
+  .cab-history-main { flex: 1 1 auto; }
+  .cab-history-side { max-width: 38%; }
+}

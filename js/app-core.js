@@ -1410,8 +1410,11 @@ function renderGame() {
   deckBox.classList.toggle('empty', !game.deck);
   deckBox.style.setProperty('--depth', String(Math.max(2, Math.min(7, Math.round(game.deck / 4) + 1))));
   document.querySelector('#deckCount').textContent = game.deck;
+  document.querySelector('#mobileDeckCount').textContent = game.deck;
+  const mobileTrump = document.querySelector('#mobileTrumpSuit');
+  mobileTrump.textContent = game.trump || '—';
+  mobileTrump.classList.toggle('red', game.trump === '♥' || game.trump === '♦');
   const table = renderTablePairs(game.table);
-  document.querySelector('#tableMessage').textContent = gameTableMessage(game);
   const seatRoot = renderOpponentSeats(game);
   const handRoot = renderHand(game, previousHand, motion && !roundEnded && !dealing);
 
@@ -1435,31 +1438,27 @@ function renderGame() {
 
 function fitTable() {
   const row = document.querySelector('#tableCards');
-  const message = document.querySelector('#tableMessage');
-  if (!row || !row.parentElement || !message) return;
+  if (!row || !row.parentElement) return;
   const table = row.parentElement;
   const tableH = table.clientHeight;
   if (!tableH) return;
   const share = (parseFloat(getComputedStyle(row).getPropertyValue('--row-max')) || 88) / 100;
-  const scale = Math.min(1, share * table.clientWidth / Math.max(1, row.offsetWidth));
-  const zoom = scale < .999 ? scale.toFixed(3) : '';
-  if (row.style.zoom !== zoom) row.style.zoom = zoom;
-  const rowScale = Number(zoom) || 1;
   const tableTop = table.getBoundingClientRect().top + table.clientTop;
   const hand = table.querySelector('.my-hand');
   const handTop = hand ? hand.getBoundingClientRect().top - tableTop : tableH;
-  const msgH = message.offsetHeight || 40;
+  const seats = table.querySelector('.seats');
+  const seatsBottom = seats && seats.children.length ? seats.getBoundingClientRect().bottom - tableTop : 0;
   const gap = 12;
-  const messageBottom = Math.max(msgH + 8, tableH - handTop + gap);
-  const messageValue = `${Math.round(messageBottom)}px`;
-  if (message.style.getPropertyValue('--message-bottom') !== messageValue) message.style.setProperty('--message-bottom', messageValue);
-  const limit = tableH - messageBottom - msgH - gap;
-  const current = row.style.getPropertyValue('--cards-shift');
-  if (current) row.style.setProperty('--cards-shift', '');
-  const base = row.getBoundingClientRect().bottom - tableTop;
-  const shift = Math.max(0, Math.round((base - limit) / rowScale));
-  const shiftValue = shift ? `${shift}px` : '';
-  row.style.setProperty('--cards-shift', shiftValue);
+  const availableHeight = Math.max(0, handTop - seatsBottom - gap * 2);
+  const scale = Math.min(1, share * table.clientWidth / Math.max(1, row.offsetWidth), availableHeight / Math.max(1, row.offsetHeight));
+  const zoom = scale < .999 ? scale.toFixed(3) : '';
+  if (row.style.zoom !== zoom) row.style.zoom = zoom;
+  const rowScale = Number(zoom) || 1;
+  if (row.style.getPropertyValue('--cards-shift')) row.style.setProperty('--cards-shift', '');
+  const bounds = row.getBoundingClientRect();
+  const desiredCenter = tableTop + (seatsBottom + handTop) / 2;
+  const shift = Math.round(((bounds.top + bounds.bottom) / 2 - desiredCenter) / rowScale);
+  row.style.setProperty('--cards-shift', shift ? `${shift}px` : '');
 }
 
 function fitHand() {
@@ -1483,7 +1482,11 @@ function fitHand() {
   const minStep = Math.max(24, Math.min(44, cardWidth * .33));
   const scrolls = styles.overflowX === 'auto' || styles.overflowX === 'scroll';
   const needed = (count * cardWidth - available) / (count - 1);
-  const overlap = Math.max(0, Math.min(cardWidth - minStep, Math.round(Math.max(scrolls ? 0 : needed, cardWidth * (scrolls ? .24 : .1)))));
+  const mobileFan = !scrolls && matchMedia('(max-width: 420px)').matches;
+  const fanOverlap = Math.max(0, (count - 3) * cardWidth * .2);
+  const overlap = mobileFan
+    ? Math.min(cardWidth - minStep, fanOverlap)
+    : Math.max(0, Math.min(cardWidth - minStep, Math.round(Math.max(scrolls ? 0 : needed, cardWidth * (scrolls ? .24 : .1)))));
   const total = cardWidth + (count - 1) * (cardWidth - overlap);
   const zoom = !scrolls && total > available + 8 ? Math.max(.7, available / total) : 1;
   apply('--overlap', `${overlap}px`);

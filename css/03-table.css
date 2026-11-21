@@ -181,6 +181,8 @@
 .seat-state.defender { color: #e59a8d; }
 .seat-state .role-icon { margin-right: 4px; }
 
+.mobile-deck-info { display: none; }
+
 .deck {
   position: absolute;
   z-index: 2;
@@ -478,32 +480,6 @@ body.is-dragging .hand-slot:hover .hand-card { transform: none; box-shadow: none
 
 .card-face.target { cursor: pointer; transition: box-shadow .16s ease, transform .16s var(--ease); }
 .card-face.target:hover { z-index: 2; box-shadow: 0 0 0 2px rgba(233, 200, 143, .75), 0 16px 30px rgba(0, 0, 0, .45); transform: translateY(-3px); }
-
-.table-message {
-  user-select: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  -webkit-user-select: none;
-  position: absolute;
-  z-index: 5;
-  bottom: var(--message-bottom, calc(var(--card-h) + 10%));
-  left: 50%;
-  max-width: 72%;
-  padding: 9px 18px;
-  border: 1px solid rgba(233, 200, 143, .18);
-  border-radius: 999px;
-  color: rgba(232, 234, 217, .88);
-  background: rgba(5, 17, 12, .6);
-  font: 500 clamp(11px, calc(var(--card-w) * .135), 14px)/1.5 var(--font-sans);
-  letter-spacing: .02em;
-  text-align: center;
-  transform: translateX(-50%);
-  backdrop-filter: blur(6px);
-}
-.table-message:empty { display: none; }
-.table-message::before { content: '•'; margin-right: 7px; color: var(--felt-brass); }
-.table-message { border-color: rgba(233, 200, 143, .35); box-shadow: 0 8px 22px rgba(0, 0, 0, .2); }
 
 .my-hand {
   position: absolute;
