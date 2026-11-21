@@ -224,7 +224,7 @@
   outline: none;
 }
 
-.main-content:has(.game-screen.active) { padding-bottom: 24px; }
+.main-content:has(.game-screen.active) { padding-top: 20px; padding-bottom: 16px; }
 
 .topbar, .game-top {
   display: flex;

@@ -47,6 +47,18 @@ function loadClient(admin = false) {
 const { context, elements: mainElements, started } = loadClient();
 await started;
 assert.equal(typeof mainElements['#createBtn'].listeners.click, 'function');
+const handStyles = new Map();
+const handCard = { offsetWidth: 64 };
+Object.assign(mainElements['#myHand'], {
+  parentElement: { clientWidth: 300 },
+  querySelectorAll: () => Array(30).fill(handCard),
+  style: { getPropertyValue: property => handStyles.get(property) || '', setProperty: (property, value) => handStyles.set(property, value) },
+});
+context.getComputedStyle = element => element === handCard ? { width: '64px' } : { paddingLeft: '10px', paddingRight: '10px', overflowX: 'visible' };
+context.matchMedia = () => ({ matches: true });
+vm.runInContext('fitHand()', context);
+assert.ok(Number(handStyles.get('--hand-zoom')) < .7);
+assert.ok(Number(handStyles.get('--hand-zoom')) > 0);
 const { context: adminContext, elements: adminElements } = loadClient(true);
 assert.equal(adminElements['#adminPanel'].hidden, true);
 assert.match(adminElements['#adminGate'].innerHTML, /id="aKey"/);

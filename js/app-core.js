@@ -1400,7 +1400,7 @@ function renderGame() {
   trump.classList.toggle('empty', !game.trumpCard);
   const trumpSuit = document.querySelector('#trumpSuit');
   if (trumpSuit) {
-    trumpSuit.textContent = game.trumpCard ? '' : game.trump || '';
+    trumpSuit.textContent = game.trump || '';
     trumpSuit.classList.toggle('red', game.trump === '♥' || game.trump === '♦');
   }
   const deckBox = document.querySelector('#deckBox');
@@ -1442,20 +1442,36 @@ function fitTable() {
   const table = row.parentElement;
   const tableH = table.clientHeight;
   if (!tableH) return;
-  const share = (parseFloat(getComputedStyle(row).getPropertyValue('--row-max')) || 88) / 100;
-  const tableTop = table.getBoundingClientRect().top + table.clientTop;
+  const share = (parseFloat(getComputedStyle(row).getPropertyValue('--row-max')) || 100) / 100;
+  const tableRect = table.getBoundingClientRect();
+  const tableTop = tableRect.top + table.clientTop;
+  const deck = table.querySelector('.deck');
+  const deckRect = deck && getComputedStyle(deck).display !== 'none' ? deck.getBoundingClientRect() : null;
+  const trump = table.querySelector('.deck-trump .card-face');
+  const trumpRect = trump && deckRect ? trump.getBoundingClientRect() : null;
+  const gap = 12;
+  const deckRight = deckRect ? Math.max(0, deckRect.right - tableRect.left) : 0;
+  const trumpRight = trumpRect ? Math.max(0, trumpRect.right - tableRect.left) : 0;
+  const protectedRight = Math.max(deckRight, trumpRight);
+  const center = table.clientWidth / 2;
+  const availableWidth = deckRect ? Math.max(1, table.clientWidth - protectedRight - gap) : table.clientWidth;
+  row.style.left = `${center}px`;
   const hand = table.querySelector('.my-hand');
   const handTop = hand ? hand.getBoundingClientRect().top - tableTop : tableH;
   const seats = table.querySelector('.seats');
   const seatsBottom = seats && seats.children.length ? seats.getBoundingClientRect().bottom - tableTop : 0;
-  const gap = 12;
   const availableHeight = Math.max(0, handTop - seatsBottom - gap * 2);
-  const scale = Math.min(1, share * table.clientWidth / Math.max(1, row.offsetWidth), availableHeight / Math.max(1, row.offsetHeight));
+  const scale = Math.min(1, share * availableWidth / Math.max(1, row.offsetWidth), availableHeight / Math.max(1, row.offsetHeight));
   const zoom = scale < .999 ? scale.toFixed(3) : '';
   if (row.style.zoom !== zoom) row.style.zoom = zoom;
   const rowScale = Number(zoom) || 1;
   if (row.style.getPropertyValue('--cards-shift')) row.style.setProperty('--cards-shift', '');
-  const bounds = row.getBoundingClientRect();
+  let bounds = row.getBoundingClientRect();
+  if (trumpRect && bounds.left < trumpRect.right + gap) {
+    const correction = (trumpRect.right + gap - bounds.left) / rowScale;
+    row.style.left = `${center + correction}px`;
+    bounds = row.getBoundingClientRect();
+  }
   const desiredCenter = tableTop + (seatsBottom + handTop) / 2;
   const shift = Math.round(((bounds.top + bounds.bottom) / 2 - desiredCenter) / rowScale);
   row.style.setProperty('--cards-shift', shift ? `${shift}px` : '');
@@ -1488,7 +1504,7 @@ function fitHand() {
     ? Math.min(cardWidth - minStep, fanOverlap)
     : Math.max(0, Math.min(cardWidth - minStep, Math.round(Math.max(scrolls ? 0 : needed, cardWidth * (scrolls ? .24 : .1)))));
   const total = cardWidth + (count - 1) * (cardWidth - overlap);
-  const zoom = !scrolls && total > available + 8 ? Math.max(.7, available / total) : 1;
+  const zoom = !scrolls && total > available ? available / total : 1;
   apply('--overlap', `${overlap}px`);
   apply('--hand-zoom', zoom < .999 ? zoom.toFixed(3) : '');
 }

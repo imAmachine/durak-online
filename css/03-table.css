@@ -1,6 +1,6 @@
 .game-screen.active { display: block; animation: fadeIn .45s var(--ease) both; }
 
-.game-top { align-items: center; margin-bottom: 20px; }
+.game-top { align-items: center; margin-bottom: 10px; }
 .game-top > * { min-width: 0; }
 .game-top .table-title { flex: 1 1 auto; min-width: 0; }
 .game-top .table-title strong { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -33,19 +33,20 @@
 .table {
   position: relative;
   isolation: isolate;
-  --card-w: clamp(84px, 6.2vw, 124px);
+  --card-w: clamp(50px, calc(13.7vw - 48px), 124px);
+  --table-card-w: var(--card-w);
   --card-h: calc(var(--card-w) * 1.39);
   --corner-size: calc(var(--card-w) * .3);
   --pip-size: calc(var(--card-w) * .21);
   --ace-size: calc(var(--card-w) * .6);
   --court-size: calc(var(--card-w) * .46);
-  --def-x: calc(var(--card-w) * .34);
-  --def-y: calc(var(--card-w) * .26);
+  --def-x: calc(var(--card-w) * .26);
+  --def-y: calc(var(--card-w) * .18);
   --hand-w: calc(var(--card-w) * 1.1);
   --hand-h: calc(var(--card-h) * 1.1);
   --deck-w: calc(var(--card-w) * .94);
   --deck-h: calc(var(--card-h) * .94);
-  min-height: clamp(600px, 74vh, 940px);
+  min-height: clamp(600px, 82vh, 1040px);
   margin-top: 6px;
   overflow: hidden;
   border: 1px solid rgba(233, 200, 143, .24);
@@ -123,10 +124,10 @@
 .seat-main strong { max-width: 100%; padding: 3px min(10px, 7cqw) 4px; overflow: hidden; border: 1px solid rgba(233, 200, 143, .35); border-radius: 999px; color: var(--felt-ink); background: rgba(8, 34, 25, .92); box-shadow: 0 4px 12px rgba(0, 0, 0, .3); font: 600 11.5px/1.3 var(--font-sans); text-overflow: ellipsis; white-space: nowrap; }
 .seat-state { color: var(--felt-brass); font-size: 8px; letter-spacing: .12em; text-transform: uppercase; }
 .seat-cards { display: flex; flex-direction: column; align-items: center; width: 100%; color: var(--felt-brass); font-variant-numeric: tabular-nums; }
-.opponent-fan { --fan-card-w: min(60px, 62cqw); position: relative; display: block; width: 100%; height: calc(var(--fan-card-w) * 1.4 + 10px); }
+.opponent-fan { --fan-card-w: min(44px, 50cqw); position: relative; display: block; width: 100%; height: calc(var(--fan-card-w) * 1.4 + 10px); }
 .opponent-fan > i {
   --fan-center: calc((var(--fan-count) - 1) / 2);
-  --fan-step: clamp(0px, (100% - var(--fan-card-w) * 1.45) / max(1, var(--fan-count) - 1), 18px);
+  --fan-step: clamp(0px, (100% - var(--fan-card-w) * 1.45) / max(1, var(--fan-count) - 1), 12px);
   position: absolute;
   left: calc(50% + (var(--fan-index) - var(--fan-center)) * var(--fan-step));
   bottom: 0;
@@ -184,8 +185,16 @@
 .mobile-deck-info { display: none; }
 
 .deck {
+  --card-w: min(104px, var(--table-card-w, var(--card-w)));
+  --card-h: calc(var(--card-w) * 1.39);
+  --deck-w: calc(var(--card-w) * .94);
+  --deck-h: calc(var(--card-h) * .94);
+  --corner-size: calc(var(--card-w) * .3);
+  --pip-size: calc(var(--card-w) * .21);
+  --ace-size: calc(var(--card-w) * .6);
+  --court-size: calc(var(--card-w) * .46);
   position: absolute;
-  z-index: 2;
+  z-index: 5;
   bottom: 30%;
   left: 2.4%;
   display: flex;
@@ -201,7 +210,7 @@
 .deck-stack {
   position: relative;
   width: var(--deck-stack-width);
-  height: calc(var(--deck-h) + var(--card-w) * .06);
+  height: calc(var(--deck-h) + var(--deck-base-offset));
 }
 
 .deck-trump {
@@ -215,7 +224,7 @@
 .deck-trump .card-face {
   position: absolute;
   top: calc(var(--deck-h) / 2 + var(--deck-base-offset));
-  left: 80%;
+  left: 81%;
   transform: translate(-50%, -50%) rotate(90deg);
   box-shadow: 0 10px 20px rgba(0, 0, 0, .42);
 }
@@ -283,16 +292,23 @@
 
 .deck-count {
   position: relative;
-  left: calc(var(--card-w) * .5);
   align-self: center;
   margin-top: calc(var(--card-w) * .18);
   color: rgba(232, 234, 217, .62);
-  font: 500 calc(var(--card-w) * .1)/1 var(--font-sans);
+  font: 500 max(10px, calc(var(--card-w) * .1))/1 var(--font-sans);
   letter-spacing: .12em;
   text-transform: uppercase;
 }
 
 .table-cards {
+  --card-w: min(112px, 14.5vw, var(--hand-w), var(--table-card-w));
+  --card-h: calc(var(--card-w) * 1.39);
+  --def-x: calc(var(--card-w) * .26);
+  --def-y: calc(var(--card-w) * .18);
+  --corner-size: calc(var(--card-w) * .3);
+  --pip-size: calc(var(--card-w) * .21);
+  --ace-size: calc(var(--card-w) * .6);
+  --court-size: calc(var(--card-w) * .46);
   position: absolute;
   z-index: 4;
   top: 49%;
@@ -309,8 +325,17 @@
 
 .pair { position: relative; width: calc(var(--card-w) + var(--def-x)); height: calc(var(--card-h) + var(--def-y)); flex: 0 0 auto; }
 .pair + .pair { margin-left: calc(var(--card-w) * .08); }
-.table-cards:has(.pair:nth-of-type(5)) { gap: 0; }
-.table-cards:has(.pair:nth-of-type(5)) .pair + .pair { margin-left: calc(var(--card-w) * .04); }
+.table-cards:has(.pair:nth-of-type(5)) {
+  --card-w: min(112px, 14.5vw, var(--hand-w), var(--table-card-w));
+  --card-h: calc(var(--card-w) * 1.39);
+  --def-x: calc(var(--card-w) * .26);
+  --def-y: calc(var(--card-w) * .18);
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: 6px 2px;
+}
+.table-cards:has(.pair:nth-of-type(5)):not(:has(.pair:nth-of-type(6))) { grid-template-columns: repeat(2, auto); }
+.table-cards:has(.pair:nth-of-type(5)) .pair + .pair { margin-left: 0; }
 .pair:nth-of-type(2) { z-index: 6; }
 .pair:nth-of-type(3) { z-index: 5; }
 .pair:nth-of-type(4) { z-index: 4; }
@@ -475,7 +500,7 @@ body.is-dragging .hand-slot:hover .hand-card { transform: none; box-shadow: none
   left: var(--def-x);
   transform: rotate(3deg);
   transform-origin: 0 0;
-  box-shadow: -6px -4px 18px rgba(0, 0, 0, .3), 0 16px 28px rgba(0, 0, 0, .42), inset 0 0 0 1px rgba(255, 255, 255, .7);
+  box-shadow: -2px -2px 6px rgba(0, 0, 0, .18), 0 5px 10px rgba(0, 0, 0, .24), inset 0 0 0 1px rgba(255, 255, 255, .7);
 }
 
 .card-face.target { cursor: pointer; transition: box-shadow .16s ease, transform .16s var(--ease); }
@@ -511,10 +536,11 @@ body.is-dragging .hand-slot:hover .hand-card { transform: none; box-shadow: none
 
 .hand-card {
   touch-action: none;
-  --corner-size: calc(var(--card-w) * .32);
-  --pip-size: calc(var(--card-w) * .225);
-  --ace-size: calc(var(--card-w) * .65);
-  --court-size: calc(var(--card-w) * .5);
+  --card-w: var(--hand-face-w, var(--hand-w));
+  --corner-size: calc(var(--card-w) * .3);
+  --pip-size: calc(var(--card-w) * .21);
+  --ace-size: calc(var(--card-w) * .6);
+  --court-size: calc(var(--card-w) * .46);
   width: 100%;
   height: 100%;
   padding: calc(var(--card-w) * .08);
